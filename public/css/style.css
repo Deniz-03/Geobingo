@@ -80,7 +80,9 @@ code { background: var(--bg-3); padding: .1em .4em; border-radius: 5px; font-siz
 .btn.big { width: 100%; padding: .8rem; font-size: 1.05rem; margin-top: .25rem; }
 .btn.tiny { padding: .3rem .6rem; font-size: .8rem; }
 .btn.ghost { background: transparent; }
-.btn.full { width: 100%; }
+/* Volle Breite heisst: die Beschriftung darf umbrechen. Sonst zwingt ein
+   langer Knopftext die ganze Card breiter als das Fenster. */
+.btn.full { width: 100%; white-space: normal; }
 
 input[type="text"], input[type="number"] {
   background: var(--bg);
@@ -110,7 +112,9 @@ input.num { width: 4.5rem; text-align: center; }
 .row.gap { margin-top: .6rem; }
 .center-row { justify-content: center; margin-top: 1rem; }
 
-input[type="range"] { width: 100%; accent-color: var(--accent); }
+/* margin: 0 - Chrome gibt Reglern von Haus aus 2px Rand, damit stehen sie
+   ein paar Pixel ueber den Rand der Card hinaus. */
+input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
 
 .divider { display: flex; align-items: center; gap: .75rem; margin: 1.25rem 0; color: var(--muted); font-size: .85rem; }
 .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
@@ -136,10 +140,15 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 /* ---------------------------------------------------------- Lobby */
 .lobby-wrap { max-width: 1150px; margin: 0 auto; padding: 1.5rem; }
 .lobby-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
-.roomcode { display: flex; align-items: center; gap: .75rem; background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: .5rem .9rem; }
+/* wrap: auf sehr schmalen Displays rutscht der Knopf unter den Code,
+   statt die ganze Lobby breiter zu machen als das Fenster. */
+.roomcode { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: .5rem .9rem; }
 .roomcode strong { font-size: 1.5rem; letter-spacing: .25em; color: var(--accent); }
 
-.lobby-grid { display: grid; grid-template-columns: 260px 1fr 300px; gap: 1rem; align-items: start; }
+.lobby-grid { display: grid; grid-template-columns: 250px 1fr 330px; gap: 1rem; align-items: start; }
+/* Ohne min-width:0 waere jede Spalte mindestens so breit wie ihr laengster
+   unumbrechbarer Inhalt - die Cards wuerden aus dem Fenster ragen. */
+.lobby-grid > .card { min-width: 0; }
 @media (max-width: 980px) { .lobby-grid { grid-template-columns: 1fr; } }
 
 .players { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .4rem; }
@@ -161,9 +170,14 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 
 /* ---------------------------------------------------------- Startort-Auswahl */
 .segmented { display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 3px; }
+.segmented { align-items: stretch; }
 .seg {
-  flex: 1; background: transparent; border: none; border-radius: 8px; color: var(--muted);
-  padding: .5rem .4rem; font-family: inherit; font-size: .88rem; cursor: pointer; white-space: nowrap;
+  /* 1 1 0 + min-width:0 = alle gleich breit und schrumpffaehig. Ohne das
+     schieben lange Beschriftungen die Knoepfe aus der Card heraus. */
+  flex: 1 1 0; min-width: 0;
+  background: transparent; border: none; border-radius: 8px; color: var(--muted);
+  padding: .5rem .35rem; font-family: inherit; font-size: .84rem; line-height: 1.25;
+  cursor: pointer; white-space: normal; hyphens: auto;
   transition: background .15s, color .15s;
 }
 .seg:hover:not(:disabled) { color: var(--text); }
@@ -253,9 +267,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .sidebar {
   position: absolute; left: 0; top: 0; bottom: 0; z-index: 10;
   width: var(--sidebar-w); display: flex; flex-direction: column;
-  background: rgba(13, 17, 23, .55);
-  backdrop-filter: blur(14px) saturate(130%);
-  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  /* Fast durchsichtig - die Trennung macht der Weichzeichner, nicht die Farbe. */
+  background: rgba(13, 17, 23, .05);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
   border-right: 1px solid rgba(255, 255, 255, .09);
   box-shadow: 6px 0 24px rgba(0, 0, 0, .35);
   transition: transform .2s ease, opacity .2s ease;
@@ -266,8 +281,13 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   padding: .75rem 1rem 1rem; border-top: 1px solid rgba(255, 255, 255, .09);
   display: flex; flex-direction: column; gap: .5rem;
 }
-/* Ueber dem hellen Panorama braucht der Text etwas mehr Halt. */
-.sidebar .timer, .sidebar .muted { text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+/* Freistehender Text liegt jetzt praktisch direkt auf dem Panorama. Gedaempftes
+   Grau verschwindet dort vor hellem Himmel - deshalb heller und mit Schatten. */
+.sidebar .timer, .sidebar .muted, .scoreboard-mini summary {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .95), 0 0 12px rgba(0, 0, 0, .8);
+}
+.sidebar .muted, .sidebar .scoreboard-mini summary { color: rgba(233, 240, 247, .92); }
+.sidebar .progress { background: rgba(0, 0, 0, .45); }
 .sidebar .btn { background: rgba(29, 37, 48, .82); }
 .sidebar .btn.ghost { background: rgba(13, 17, 23, .45); }
 
@@ -286,7 +306,9 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   border: 1px solid var(--line); background: var(--bg-3);
 }
 .words.game li.done { border-color: var(--good); background: rgba(52, 211, 153, .10); }
-.words.game .label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* break-word statt anywhere: normale Woerter bleiben ganz, nur wirklich
+   ueberlange werden getrennt. */
+.words.game .label { flex: 1; min-width: 0; overflow-wrap: break-word; }
 .words.game .num { width: auto; color: var(--muted); font-size: .8rem; }
 .word-actions { display: flex; gap: .3rem; flex: none; }
 
@@ -401,8 +423,9 @@ kbd {
 
 /* ---------------------------------------------------------- Mobile */
 @media (max-width: 720px) {
-  /* min(): auf sehr schmalen Displays bleibt sonst kein Platz fuer die Taste. */
-  .game-layout { --sidebar-w: min(280px, 72vw); }
+  /* min() greift erst unterhalb echter Handy-Breiten - dort bliebe sonst kein
+     Platz fuer die Umschalt-Taste. Auf einem 375px-Display bleiben es 280px. */
+  .game-layout { --sidebar-w: min(280px, 78vw); }
   .lobby-wrap, .results-wrap { padding: 1rem; }
   .vote-btn { padding: .7rem 1.2rem; font-size: 1rem; }
   .timer { font-size: 2rem; }

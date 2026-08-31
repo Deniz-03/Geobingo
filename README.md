@@ -162,8 +162,8 @@ In beiden Kartenansichten kannst du statt zu klicken auch **Koordinaten einfüge
 Rechtsklick auf den Ort → Koordinaten anklicken zum Kopieren) – praktisch, wenn ihr eine bestimmte
 Stadt spielen wollt, statt auf der Weltkarte herumzuzoomen.
 
-**Runde.** Street View füllt das Fenster, die Wortliste liegt als halbtransparente Leiste darüber –
-so siehst du das ganze Bild, auch ohne die Liste einzuklappen (☰ oben links). Auch die Karte im
+**Runde.** Street View füllt das Fenster, die Wortliste schwebt als fast durchsichtige Leiste
+darüber – so siehst du das ganze Bild, auch ohne die Liste einzuklappen (☰ oben links). Auch die Karte im
 Spiel lässt die Liste stehen, damit du beim Aussuchen siehst, was noch fehlt. Wenn du etwas Passendes siehst,
 richte die Kamera darauf aus und drücke bei dem Wort auf **📸 Merken**. Gespeichert wird die
 exakte Blickrichtung – die anderen sehen später genau dein Bild. Mit **↻ Ersetzen** überschreibst
