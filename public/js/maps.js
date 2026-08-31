@@ -1,6 +1,10 @@
 // Alles rund um Google Street View: Laden der API, Zufallsorte finden,
 // Panoramen erzeugen und Standbilder fuer die Vorschau bauen.
 
+import {
+  countryGeoJson, filterActive, isAllowed, normalizeFilter, randomPointInCountries,
+} from './countries.js';
+
 let apiKey = '';
 let loadPromise = null;
 
@@ -79,32 +83,62 @@ function getPanoramaAt(service, request) {
 }
 
 /**
+ * Zieht einen Kandidatenpunkt - mit Laender-Filter aus den erlaubten Laendern,
+ * ohne Filter aus den Regionen oben. Gesperrte Laender werden gleich hier
+ * uebersprungen, das spart Anfragen an Google.
+ */
+function candidatePoint(filter) {
+  const f = normalizeFilter(filter);
+  if (!filterActive(f)) return randomPoint();
+  if (f.mode === 'allow') return randomPointInCountries(f.codes) || randomPoint();
+
+  for (let i = 0; i < 60; i++) {
+    const p = randomPoint();
+    if (isAllowed(p.lat, p.lng, f)) return p;
+  }
+  return randomPoint();
+}
+
+/**
  * Sucht einen zufaelligen Ort mit Street-View-Abdeckung.
  * Fragt mehrere Kandidaten parallel ab, damit es schnell geht.
+ *
+ * Mit Laender-Filter wird enger gesucht: ein grosser Radius wuerde sonst gern
+ * ueber die Grenze schnappen. Deshalb mehr Versuche mit kleinerem Radius, und
+ * das Ergebnis wird am Ende nochmal gegen den Filter geprueft.
  */
-export async function findRandomLocation({ batches = 12, perBatch = 4, radius = 60000 } = {}) {
+export async function findRandomLocation({ batches, perBatch = 4, radius, filter = null } = {}) {
   const service = new google.maps.StreetViewService();
   const source = google.maps.StreetViewSource?.OUTDOOR || 'outdoor';
+  const filtered = filterActive(filter);
+  const searchRadius = radius ?? (filtered ? 25000 : 60000);
+  const rounds = batches ?? (filtered ? 30 : 12);
 
-  for (let i = 0; i < batches; i++) {
+  for (let i = 0; i < rounds; i++) {
     const tries = Array.from({ length: perBatch }, () =>
-      getPanoramaAt(service, { location: randomPoint(), radius, source })
+      getPanoramaAt(service, { location: candidatePoint(filter), radius: searchRadius, source })
     );
     const settled = await Promise.allSettled(tries);
-    const hit = settled.find((r) => r.status === 'fulfilled');
-    if (hit) {
-      const data = hit.value;
+    for (const res of settled) {
+      if (res.status !== 'fulfilled') continue;
+      const data = res.value;
+      const lat = data.location.latLng.lat();
+      const lng = data.location.latLng.lng();
+      // Der Radius kann ueber die Grenze gerutscht sein - also nachmessen.
+      if (filtered && !isAllowed(lat, lng, filter)) continue;
       return {
         pano: data.location.pano,
-        lat: data.location.latLng.lat(),
-        lng: data.location.latLng.lng(),
+        lat,
+        lng,
         heading: Math.random() * 360,
         pitch: 0,
         zoom: 0,
       };
     }
   }
-  throw new Error('Kein Street-View-Ort gefunden. Bitte nochmal versuchen.');
+  throw new Error(filtered
+    ? 'In den gewählten Ländern wurde kein Street-View-Ort gefunden. Nimm ein Land mehr dazu.'
+    : 'Kein Street-View-Ort gefunden. Bitte nochmal versuchen.');
 }
 
 /** Peilung von einem Punkt zum anderen - damit die Kamera dahin schaut, wo geklickt wurde. */
@@ -146,25 +180,74 @@ export async function findPanoramaNear(lat, lng, radii = [80, 400, 2000]) {
   throw new Error('Hier gibt es kein Street View. Klick auf eine blau markierte Strasse.');
 }
 
+// Farben fuer die Laender-Markierung: gesperrt rot, erlaubt gruen.
+const BLOCK_COLOR = '#f87171';
+const ALLOW_COLOR = '#34d399';
+
+const MAP_BASE_OPTIONS = {
+  minZoom: 2,
+  streetViewControl: false,
+  mapTypeControl: true,
+  fullscreenControl: false,
+  clickableIcons: false,
+  gestureHandling: 'greedy',
+};
+
+/**
+ * Legt die ausgewaehlten Laender als eingefaerbte Flaechen ueber eine Karte.
+ * Nur die markierten Laender werden gezeichnet - das haelt die Karte fluessig.
+ * Die Flaechen sind nicht anklickbar, damit Klicks weiter bei der Karte landen.
+ */
+function attachCountryHighlight(map) {
+  const layer = new google.maps.Data({ map });
+  const geojson = countryGeoJson();
+  if (geojson) layer.addGeoJson(geojson);
+
+  let current = { mode: 'off', codes: [] };
+  const styleFor = (feature) => {
+    const active = current.codes.includes(feature.getProperty('code'));
+    if (!active) return { visible: false, clickable: false };
+    const color = current.mode === 'allow' ? ALLOW_COLOR : BLOCK_COLOR;
+    return {
+      visible: true,
+      clickable: false,
+      fillColor: color,
+      fillOpacity: current.mode === 'allow' ? 0.18 : 0.3,
+      strokeColor: color,
+      strokeWeight: 1.5,
+      strokeOpacity: 0.9,
+      zIndex: 1,
+    };
+  };
+  // Immer eine frische Funktion uebergeben - sonst haelt die Data-Layer die
+  // Style-Angabe fuer unveraendert und zeichnet nicht neu.
+  const redraw = () => layer.setStyle((f) => styleFor(f));
+  redraw();
+
+  return {
+    set(filter) {
+      const f = normalizeFilter(filter);
+      current = filterActive(f) ? f : { mode: 'off', codes: [] };
+      redraw();
+    },
+  };
+}
+
 /**
  * Karte zum Aussuchen des Startorts. Die blauen Linien zeigen, wo Street View existiert.
  * onPick bekommt die angeklickten Koordinaten.
  */
 export function createPickerMap(el, center, onPick) {
   const map = new google.maps.Map(el, {
+    ...MAP_BASE_OPTIONS,
     center: center || { lat: 30, lng: 5 },
     zoom: center ? 15 : 2,
-    minZoom: 2,
-    streetViewControl: false,
-    mapTypeControl: true,
-    fullscreenControl: false,
-    clickableIcons: false,
-    gestureHandling: 'greedy',
   });
 
   new google.maps.StreetViewCoverageLayer().setMap(map);
 
   const marker = new google.maps.Marker({ map, position: center || null, visible: !!center });
+  let highlight = null;
 
   map.addListener('click', (e) => onPick(e.latLng.lat(), e.latLng.lng()));
 
@@ -178,6 +261,98 @@ export function createPickerMap(el, center, onPick) {
     center(lat, lng, zoom) {
       map.setCenter({ lat, lng });
       if (zoom) map.setZoom(zoom);
+    },
+    resize() {
+      google.maps.event.trigger(map, 'resize');
+    },
+    /** Zeigt gesperrte bzw. erlaubte Laender an - erst beim ersten Aufruf aufgebaut. */
+    showFilter(filter) {
+      if (!highlight) {
+        if (!filterActive(filter) || !countryGeoJson()) return;
+        highlight = attachCountryHighlight(map);
+      }
+      highlight.set(filter);
+    },
+  };
+}
+
+/**
+ * Weltkarte, auf der man Laender anklickt. Gibt bei jedem Klick den Landescode
+ * zurueck; die Auswahl selbst verwaltet der Aufrufer und schiebt sie per
+ * setSelection() wieder rein.
+ */
+export function createCountryMap(el, { onToggle, onHover }) {
+  const map = new google.maps.Map(el, {
+    ...MAP_BASE_OPTIONS,
+    center: { lat: 25, lng: 8 },
+    zoom: 2,
+    mapTypeControl: false,
+    styles: [
+      { featureType: 'poi', stylers: [{ visibility: 'off' }] },
+      { featureType: 'transit', stylers: [{ visibility: 'off' }] },
+      { featureType: 'road', stylers: [{ visibility: 'off' }] },
+    ],
+  });
+
+  const layer = new google.maps.Data({ map });
+  const geojson = countryGeoJson();
+  if (geojson) layer.addGeoJson(geojson);
+
+  let mode = 'block';
+  let selected = new Set();
+  let hovered = null;
+
+  const styleFor = (feature) => {
+    const code = feature.getProperty('code');
+    const on = selected.has(code);
+    const hot = code === hovered;
+    const color = mode === 'allow' ? ALLOW_COLOR : BLOCK_COLOR;
+    return {
+      clickable: true,
+      fillColor: on ? color : '#7f8ea3',
+      fillOpacity: on ? (hot ? 0.62 : 0.48) : (hot ? 0.34 : 0.08),
+      strokeColor: on ? color : '#94a3b8',
+      strokeWeight: on ? 1.6 : 0.7,
+      strokeOpacity: on ? 1 : 0.6,
+      zIndex: on ? 2 : 1,
+    };
+  };
+  // Frische Funktion pro Aufruf, sonst haelt die Data-Layer den Style fuer
+  // unveraendert und zeichnet nicht neu.
+  const redraw = () => layer.setStyle((f) => styleFor(f));
+  redraw();
+
+  layer.addListener('click', (e) => onToggle(e.feature.getProperty('code')));
+  layer.addListener('mouseover', (e) => {
+    hovered = e.feature.getProperty('code');
+    redraw();
+    onHover?.(hovered, e.feature.getProperty('name'));
+  });
+  layer.addListener('mouseout', () => {
+    hovered = null;
+    redraw();
+    onHover?.(null, null);
+  });
+
+  return {
+    map,
+    setMode(next) {
+      const wanted = next === 'allow' ? 'allow' : 'block';
+      if (wanted === mode) return; // 239 Laender neu einfaerben lohnt sich nur bei echter Aenderung
+      mode = wanted;
+      redraw();
+    },
+    setSelection(codes) {
+      selected = new Set(codes);
+      redraw();
+    },
+    /** Zoomt auf ein Land, damit man nach der Suche sieht, wo es liegt. */
+    focus(code) {
+      const feature = layer.getFeatureById(code);
+      if (!feature) return;
+      const bounds = new google.maps.LatLngBounds();
+      feature.getGeometry().forEachLatLng((ll) => bounds.extend(ll));
+      if (!bounds.isEmpty()) map.fitBounds(bounds, 60);
     },
     resize() {
       google.maps.event.trigger(map, 'resize');

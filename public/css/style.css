@@ -176,6 +176,47 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 }
 .pick-thumb { width: 100%; border-radius: 7px; display: block; aspect-ratio: 16 / 7; object-fit: cover; background: var(--bg-3); }
 
+/* ---------------------------------------------------------- Laender-Filter */
+.chips { display: flex; flex-wrap: wrap; gap: .3rem; }
+.chip {
+  font-size: .8rem; padding: .18rem .6rem; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--bg-3); white-space: nowrap;
+}
+.chip.block { border-color: rgba(248, 113, 113, .55); background: rgba(248, 113, 113, .14); color: #fecaca; }
+.chip.allow { border-color: rgba(52, 211, 153, .55); background: rgba(52, 211, 153, .14); color: #bbf7d0; }
+
+.country-side {
+  width: 330px; flex: none; border-left: 1px solid var(--line); min-height: 0;
+  padding: .8rem; display: flex; flex-direction: column; gap: .6rem;
+}
+.country-list {
+  list-style: none; margin: 0; padding: 0; flex: 1; min-height: 120px; overflow-y: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+}
+.country-list li {
+  display: flex; align-items: center; gap: .55rem;
+  padding: .32rem .45rem; font-size: .9rem; cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, .04);
+}
+.country-list li:last-child { border-bottom: none; }
+.country-list li:hover { background: var(--bg-3); }
+.country-list li.empty { cursor: default; justify-content: center; padding: 1rem; }
+.country-list li.empty:hover { background: none; }
+.country-list .box {
+  width: 19px; height: 19px; flex: none; border: 1px solid var(--line); border-radius: 5px;
+  background: var(--bg-2); display: flex; align-items: center; justify-content: center;
+  font-size: .8rem; line-height: 1;
+}
+.country-list li.on .box { background: var(--accent); border-color: var(--accent); color: #1a1207; font-weight: 700; }
+.country-list .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.country-list li button { flex: none; opacity: 0; padding: .1rem .35rem; }
+.country-list li:hover button, .country-list li button:focus-visible { opacity: 1; }
+
+.country-selected { flex: none; display: flex; flex-direction: column; gap: .4rem; }
+.country-selected .chips { max-height: 96px; overflow-y: auto; }
+.row.between { justify-content: space-between; }
+#cm-title { margin-bottom: .15rem; }
+
 .modal-inner.wide { width: min(1180px, 100%); height: min(720px, 92vh); }
 .picker { flex: 1; display: flex; min-height: 0; }
 .picker-map { flex: 1; min-width: 0; background: var(--bg-3); }
@@ -197,22 +238,38 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 @media (max-width: 820px) {
   .picker { flex-direction: column; }
   .picker-map { min-height: 240px; }
-  .picker-side { width: auto; border-left: none; border-top: 1px solid var(--line); }
+  .picker-side, .country-side { width: auto; border-left: none; border-top: 1px solid var(--line); }
   .picker-pano, .picker-empty { height: 130px; }
   .picker-empty { margin-top: -130px; }
+  .country-list { max-height: 180px; }
 }
 
 /* ---------------------------------------------------------- Game */
-.game-layout { display: flex; height: 100%; }
+/* Die Wortliste schwebt als halbtransparente Leiste ueber dem Panorama -
+   so sieht man auch bei offener Liste das ganze Bild. Die Eintraege selbst
+   bleiben deckend, damit sie lesbar sind. */
+.game-layout { position: relative; height: 100%; --sidebar-w: 320px; }
 
 .sidebar {
-  width: 320px; flex: none; display: flex; flex-direction: column;
-  background: var(--bg-2); border-right: 1px solid var(--line);
-  transition: margin-left .2s ease;
+  position: absolute; left: 0; top: 0; bottom: 0; z-index: 10;
+  width: var(--sidebar-w); display: flex; flex-direction: column;
+  background: rgba(13, 17, 23, .55);
+  backdrop-filter: blur(14px) saturate(130%);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  border-right: 1px solid rgba(255, 255, 255, .09);
+  box-shadow: 6px 0 24px rgba(0, 0, 0, .35);
+  transition: transform .2s ease, opacity .2s ease;
 }
-.sidebar.collapsed { margin-left: -320px; }
-.sidebar-head { padding: 1rem; border-bottom: 1px solid var(--line); }
-.sidebar-foot { padding: .75rem 1rem 1rem; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: .5rem; }
+.sidebar.collapsed { transform: translateX(-100%); opacity: 0; }
+.sidebar-head { padding: 1rem; border-bottom: 1px solid rgba(255, 255, 255, .09); }
+.sidebar-foot {
+  padding: .75rem 1rem 1rem; border-top: 1px solid rgba(255, 255, 255, .09);
+  display: flex; flex-direction: column; gap: .5rem;
+}
+/* Ueber dem hellen Panorama braucht der Text etwas mehr Halt. */
+.sidebar .timer, .sidebar .muted { text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+.sidebar .btn { background: rgba(29, 37, 48, .82); }
+.sidebar .btn.ghost { background: rgba(13, 17, 23, .45); }
 
 .timer { font-size: 2.4rem; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
 .timer.small { font-size: 1.4rem; }
@@ -233,7 +290,8 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .words.game .num { width: auto; color: var(--muted); font-size: .8rem; }
 .word-actions { display: flex; gap: .3rem; flex: none; }
 
-.stage { position: relative; flex: 1; min-width: 0; }
+/* Kein z-index: die Umschalt-Taste soll ueber der Leiste liegen duerfen. */
+.stage { position: absolute; inset: 0; }
 .pano { position: absolute; inset: 0; background: #000; }
 .pano-loading {
   position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; gap: 1rem;
@@ -242,16 +300,26 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .spinner { width: 38px; height: 38px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Wandert mit der Leiste mit, damit er nie darunter verschwindet. */
 .sidebar-toggle {
-  position: absolute; top: .75rem; left: .75rem; z-index: 6;
+  position: absolute; top: .75rem; left: calc(var(--sidebar-w) + .75rem); z-index: 11;
   background: rgba(13, 17, 23, .85); color: var(--text); border: 1px solid var(--line);
   border-radius: 10px; width: 40px; height: 40px; font-size: 1.1rem; cursor: pointer;
+  transition: left .2s ease;
 }
+body:not(.sidebar-open) .sidebar-toggle { left: .75rem; }
+
+.words.game li { box-shadow: 0 2px 8px rgba(0, 0, 0, .35); }
 
 .scoreboard-mini summary { cursor: pointer; color: var(--muted); font-size: .85rem; padding: .25rem 0; }
 .scoreboard-mini ul { margin-top: .5rem; }
 
 /* ---------------------------------------------------------- Karte im Spiel */
+/* Die Karte laesst die Wortliste stehen - man will ja sehen, was noch fehlt. */
+#gamemap { background: rgba(0, 0, 0, .55); padding: 1rem; transition: left .2s ease; }
+body.sidebar-open #gamemap { left: 320px; }
+@media (max-width: 900px) { body.sidebar-open #gamemap { left: 0; } }
+
 .gamemap-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .gamemap-bar {
   flex: none; display: flex; align-items: center; gap: .5rem;
@@ -262,6 +330,8 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 #gamemap-status.bad { color: var(--bad); }
 #gamemap .modal-head .row { gap: .75rem; }
 #gamemap-title { margin-bottom: .15rem; }
+/* Jeder Hinweis auf eine eigene Zeile - sonst klebt der Laender-Hinweis am Text. */
+#gamemap-hint, #gamemap-filter { display: block; }
 
 kbd {
   background: var(--bg); border: 1px solid var(--line); border-bottom-width: 2px;
@@ -277,6 +347,9 @@ kbd {
 @media (max-width: 720px) {
   .gamemap-bar { flex-wrap: wrap; }
   .gamemap-bar input { max-width: none; flex: 1; }
+  /* Titel und Bedienleiste untereinander, sonst quetscht sich alles ineinander. */
+  .modal-head { flex-wrap: wrap; gap: .5rem; }
+  .modal-head > .row { width: 100%; justify-content: space-between; }
 }
 
 /* ---------------------------------------------------------- Voting */
@@ -328,8 +401,8 @@ kbd {
 
 /* ---------------------------------------------------------- Mobile */
 @media (max-width: 720px) {
-  .sidebar { position: absolute; z-index: 10; height: 100%; width: 280px; box-shadow: var(--shadow); }
-  .sidebar.collapsed { margin-left: -280px; }
+  /* min(): auf sehr schmalen Displays bleibt sonst kein Platz fuer die Taste. */
+  .game-layout { --sidebar-w: min(280px, 72vw); }
   .lobby-wrap, .results-wrap { padding: 1rem; }
   .vote-btn { padding: .7rem 1.2rem; font-size: 1rem; }
   .timer { font-size: 2rem; }

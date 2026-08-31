@@ -1,5 +1,6 @@
 import http from 'node:http';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -60,6 +61,11 @@ const MIME = {
   '.webmanifest': 'application/manifest+json',
 };
 
+// Ab dieser Groesse lohnt sich das Komprimieren - vor allem fuer die
+// Laenderkarte (~1,4 MB Text), die sonst ueber WLAN spuerbar bummelt.
+const GZIP_MIN_BYTES = 4096;
+const GZIP_TYPES = new Set(['.html', '.js', '.css', '.json', '.svg', '.webmanifest']);
+
 function sendJson(res, status, body) {
   const data = JSON.stringify(body);
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(data) });
@@ -80,12 +86,27 @@ async function serveStatic(req, res) {
   try {
     const stat = await fsp.stat(filePath);
     if (stat.isDirectory()) throw new Error('dir');
-    res.writeHead(200, {
-      'Content-Type': MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
-      'Content-Length': stat.size,
+
+    const ext = path.extname(filePath).toLowerCase();
+    const headers = {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
       'Cache-Control': 'no-cache',
-    });
-    fs.createReadStream(filePath).pipe(res);
+    };
+    const gzip = GZIP_TYPES.has(ext)
+      && stat.size >= GZIP_MIN_BYTES
+      && /\bgzip\b/.test(req.headers['accept-encoding'] || '');
+
+    if (gzip) {
+      // Ohne bekannte Endgroesse faellt Content-Length weg - das ist in Ordnung.
+      headers['Content-Encoding'] = 'gzip';
+      headers.Vary = 'Accept-Encoding';
+      res.writeHead(200, headers);
+      fs.createReadStream(filePath).pipe(zlib.createGzip()).pipe(res);
+    } else {
+      headers['Content-Length'] = stat.size;
+      res.writeHead(200, headers);
+      fs.createReadStream(filePath).pipe(res);
+    }
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('404 - nicht gefunden');
   }

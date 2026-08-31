@@ -1,8 +1,12 @@
 import * as net from './net.js';
 import {
   loadMaps, findRandomLocation, findPanoramaNear, createGamePanorama, createViewPanorama,
-  createPickerMap, applyView, readView, thumbnailUrl,
+  createPickerMap, createCountryMap, applyView, readView, thumbnailUrl,
 } from './maps.js';
+import {
+  loadCountries, countriesReady, allCountries, namesFor,
+  filterActive, normalizeFilter, isAllowed, rejectionReason,
+} from './countries.js';
 
 // ---------------------------------------------------------------- Helfer
 
@@ -43,6 +47,12 @@ let picker = null;
 let pickerPano = null;
 let pickedCandidate = null;
 
+let countryMap = null;
+let countryLoad = null;
+let countryLoadFailed = false;
+/** Arbeitskopie der Auswahl, solange das Laender-Modal offen ist. */
+const cm = { mode: 'block', codes: new Set() };
+
 let lastPhase = null;
 let lastVoteItemId = null;
 let gameDeadline = 0;
@@ -76,6 +86,7 @@ function showScreen(name) {
 
 async function boot() {
   wireStaticHandlers();
+  setSidebarOpen(true);
 
   let cfg;
   try {
@@ -243,6 +254,8 @@ function renderLobby() {
   $('cfg-samestart').disabled = !state.isHost;
   $('rand-count').max = 40;
 
+  renderCountryFilter();
+
   $('lobby-waiting').classList.toggle('hidden', state.isHost);
   $('lobby-start').disabled = !words.length || startingGame;
   $('lobby-start').textContent = startingGame ? 'Suche Startort…' : 'Spiel starten';
@@ -261,6 +274,193 @@ function locLabel(v) {
   return `${v.lat.toFixed(4)}, ${v.lng.toFixed(4)}`;
 }
 
+// ---- Laender-Filter -------------------------------------------------------
+
+/** Der Filter des Raums, immer in normalisierter Form. */
+function activeFilter() {
+  return normalizeFilter(state?.config?.countryFilter);
+}
+
+/**
+ * Laedt die Grenzdaten nach. Das sind gut 1,4 MB, deshalb erst wenn sie
+ * wirklich gebraucht werden - also sobald ein Filter im Spiel ist.
+ * Alle Aufrufer haengen sich an denselben Ladevorgang; sonst gaebe es bei
+ * einem Fehler eine Meldung pro Aufruf.
+ */
+function ensureCountries({ rerender = true } = {}) {
+  if (countriesReady()) return Promise.resolve(true);
+  if (countryLoadFailed) return Promise.resolve(false);
+  if (!countryLoad) {
+    countryLoad = loadCountries()
+      .then(() => true)
+      .catch((err) => {
+        countryLoadFailed = true;
+        toast(err.message, 'error');
+        return false;
+      });
+  }
+  return countryLoad.then((ok) => {
+    if (ok && rerender && state) render();
+    return ok;
+  });
+}
+
+function chipsHtml(names, mode, empty) {
+  return names.length
+    ? names.map((n) => `<span class="chip ${mode}">${esc(n)}</span>`).join('')
+    : `<span class="muted small">${esc(empty)}</span>`;
+}
+
+function renderCountryFilter() {
+  const f = activeFilter();
+  for (const [id, value] of [['cf-off', 'off'], ['cf-block', 'block'], ['cf-allow', 'allow']]) {
+    $(id).classList.toggle('active', f.mode === value);
+    $(id).disabled = !state.isHost;
+  }
+  $('cf-row').classList.toggle('hidden', f.mode === 'off');
+  if (f.mode === 'off') return;
+
+  // Ohne die Grenzdaten kennen wir nur die Codes - also nachladen.
+  if (f.codes.length && !countriesReady()) ensureCountries();
+
+  $('cf-hint').textContent = f.mode === 'block'
+    ? 'Diese Länder kommen nicht vor:'
+    : 'Gespielt wird nur in diesen Ländern:';
+  $('cf-chips').innerHTML = chipsHtml(
+    countriesReady() ? namesFor(f.codes) : f.codes,
+    f.mode,
+    'Noch keine Länder gewählt – es gilt weiter die ganze Welt.',
+  );
+}
+
+function countryModalOpen() {
+  return !$('countrymodal').classList.contains('hidden');
+}
+
+/**
+ * Schickt die Auswahl aus dem Modal an den Server.
+ * Nur bei offenem Modal - danach ist die Arbeitskopie veraltet und wuerde
+ * einen Moduswechsel aus der Lobby wieder ueberschreiben.
+ */
+function pushCountryFilter() {
+  if (!countryModalOpen()) return;
+  net.send({ t: 'setConfig', config: { countryFilter: { mode: cm.mode, codes: [...cm.codes] } } });
+}
+
+function setCountryMode(mode) {
+  cm.mode = mode;
+  pushCountryFilter();
+  renderCountryModal();
+}
+
+function toggleCountry(code) {
+  if (!code) return;
+  if (cm.codes.has(code)) cm.codes.delete(code);
+  else cm.codes.add(code);
+  pushCountryFilter();
+  renderCountryModal();
+}
+
+function setCmStatus(text) {
+  $('cm-status').textContent = text;
+}
+
+async function openCountryModal() {
+  const f = activeFilter();
+  cm.mode = f.mode === 'allow' ? 'allow' : 'block';
+  cm.codes = new Set(f.codes);
+  $('cm-search').value = '';
+  $('countrymodal').classList.remove('hidden');
+  setCmStatus('Länderkarte wird geladen…');
+  renderCountryModal();
+
+  if (!mapsReady) {
+    try { await loadMaps(apiKey); mapsReady = true; } catch (err) { return setCmStatus(err.message); }
+  }
+  if (!(await ensureCountries({ rerender: false }))) {
+    return setCmStatus('Die Länderkarte konnte nicht geladen werden.');
+  }
+  setCmStatus('Tipp: Land anklicken zum Aus- und Abwählen.');
+  renderCountryModal();
+
+  // setTimeout statt requestAnimationFrame: in einem Hintergrund-Tab
+  // wuerde rAF nie feuern und die Karte nie entstehen.
+  setTimeout(() => {
+    if ($('countrymodal').classList.contains('hidden')) return;
+    if (!countryMap) {
+      countryMap = createCountryMap($('cm-map'), {
+        onToggle: toggleCountry,
+        onHover: (code, name) => setCmStatus(
+          name ? `${name}${cm.codes.has(code) ? ' · ausgewählt' : ''}` : 'Tipp: Land anklicken zum Aus- und Abwählen.',
+        ),
+      });
+      setTimeout(() => countryMap.resize(), 80);
+    } else {
+      countryMap.resize();
+    }
+    countryMap.setMode(cm.mode);
+    countryMap.setSelection(cm.codes);
+  }, 0);
+}
+
+function renderCountryModal() {
+  $('cm-mode-block').classList.toggle('active', cm.mode === 'block');
+  $('cm-mode-allow').classList.toggle('active', cm.mode === 'allow');
+  $('cm-title').textContent = cm.mode === 'block' ? 'Länder sperren' : 'Nur diese Länder';
+  $('cm-sub').textContent = cm.mode === 'block'
+    ? 'Wähle die Länder, in denen nicht gespielt werden soll.'
+    : 'Wähle die Länder, in denen gespielt werden soll.';
+  $('cm-count').textContent = String(cm.codes.size);
+
+  const query = $('cm-search').value.trim().toLowerCase();
+  const matches = allCountries().filter((c) =>
+    !query || c.name.toLowerCase().includes(query) || c.code.toLowerCase() === query);
+
+  if (!countriesReady()) {
+    $('cm-results').innerHTML = '<li class="empty muted small">Länder werden geladen…</li>';
+  } else {
+    $('cm-results').innerHTML = matches.length
+      ? matches.map((c) => `
+          <li class="${cm.codes.has(c.code) ? 'on' : ''}" data-code="${esc(c.code)}">
+            <span class="box">${cm.codes.has(c.code) ? '✓' : ''}</span>
+            <span class="name">${esc(c.name)}</span>
+            <button class="btn tiny ghost" data-focus="${esc(c.code)}" title="Auf der Karte zeigen">◎</button>
+          </li>`).join('')
+      : '<li class="empty muted small">Kein Land gefunden.</li>';
+  }
+
+  $('cm-chips').innerHTML = chipsHtml(
+    namesFor([...cm.codes]),
+    cm.mode,
+    'Nichts ausgewählt – damit gilt weiter die ganze Welt.',
+  );
+
+  countryMap?.setMode(cm.mode);
+  countryMap?.setSelection(cm.codes);
+}
+
+function closeCountryModal() {
+  $('countrymodal').classList.add('hidden');
+}
+
+/**
+ * Setzt Hinweistext und die farbigen Flaechen auf einer Karte.
+ * Ohne aktiven Filter passiert nichts - die Karte bleibt wie immer.
+ */
+function applyFilterToMap(mapHandle, hintId) {
+  const f = activeFilter();
+  const on = filterActive(f);
+  const hint = $(hintId);
+  hint.classList.toggle('hidden', !on);
+  if (on) {
+    hint.textContent = f.mode === 'block'
+      ? '🚫 Rot markierte Länder sind für diese Runde gesperrt.'
+      : '✅ Gespielt wird nur in den grün markierten Ländern.';
+  }
+  // Auch beim Ausschalten aufrufen - sonst blieben alte Flaechen liegen.
+  if (countriesReady()) mapHandle?.showFilter(f);
+}
+
 // ---- Startort auf der Karte auswaehlen ------------------------------------
 
 async function openMapPicker() {
@@ -272,6 +472,7 @@ async function openMapPicker() {
   $('picker-confirm').disabled = true;
   setPickerStatus(existing ? `Aktuell: ${existing.label || locLabel(existing)}` : '', '');
   $('mapmodal').classList.remove('hidden');
+  if (filterActive(activeFilter())) await ensureCountries({ rerender: false });
 
   // Bewusst setTimeout statt requestAnimationFrame: rAF feuert in einem
   // Hintergrund-Tab nicht, die Karte wuerde dann nie entstehen.
@@ -289,6 +490,7 @@ async function openMapPicker() {
       picker.mark(center.lat, center.lng);
       showPickerPreview(existing);
     }
+    applyFilterToMap(picker, 'picker-filter');
   }, 0);
 }
 
@@ -308,13 +510,19 @@ async function onMapPick(lat, lng, recenter = false) {
   $('picker-confirm').disabled = true;
   try {
     const view = await findPanoramaNear(lat, lng);
-    pickedCandidate = view;
     // Die Karte ist optional - ueber die Koordinateneingabe geht es auch ohne sie.
     if (picker) {
       picker.mark(view.lat, view.lng);
       if (recenter) picker.center(view.lat, view.lng, 16);
     }
     showPickerPreview(view);
+
+    const filter = activeFilter();
+    if (!isAllowed(view.lat, view.lng, filter)) {
+      pickedCandidate = null;
+      return setPickerStatus(rejectionReason(view.lat, view.lng, filter), 'bad');
+    }
+    pickedCandidate = view;
     setPickerStatus(view.description ? `📍 ${view.description}` : '📍 Street View gefunden', 'ok');
     $('picker-confirm').disabled = false;
   } catch (err) {
@@ -402,9 +610,11 @@ async function initGamePanorama() {
   }
 
   // "Alle am gleichen Ort" ist aus: jeder bekommt seinen eigenen Zufallsort.
+  const filter = activeFilter();
   setPanoLoading(true);
   try {
-    placePlayer(await findRandomLocation());
+    if (filterActive(filter)) await ensureCountries({ rerender: false });
+    placePlayer(await findRandomLocation({ filter }));
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -477,6 +687,7 @@ async function openGameMap(firstPick = false) {
   $('gamemap-close').classList.toggle('hidden', firstPick);
   setGameMapStatus('', '');
   $('gamemap').classList.remove('hidden');
+  if (filterActive(activeFilter())) await ensureCountries({ rerender: false });
 
   setTimeout(() => {
     const here = readView(gamePano);
@@ -491,6 +702,7 @@ async function openGameMap(firstPick = false) {
         gameMap.mark(center.lat, center.lng);
       }
     }
+    applyFilterToMap(gameMap, 'gamemap-filter');
   }, 0);
 }
 
@@ -498,6 +710,11 @@ async function onGameMapPick(lat, lng, recenter = false) {
   setGameMapStatus('Suche Street View…', '');
   try {
     const view = await findPanoramaNear(lat, lng);
+    const filter = activeFilter();
+    if (!isAllowed(view.lat, view.lng, filter)) {
+      if (recenter && gameMap) gameMap.center(view.lat, view.lng, 8);
+      return setGameMapStatus(rejectionReason(view.lat, view.lng, filter), 'bad');
+    }
     if (recenter && gameMap) gameMap.center(view.lat, view.lng, 16);
     placePlayer(view);
     firstPickPending = false;
@@ -748,6 +965,48 @@ function wireStaticHandlers() {
   $('mapmodal-close').addEventListener('click', closeMapPicker);
   $('mapmodal').addEventListener('click', (e) => { if (e.target === $('mapmodal')) closeMapPicker(); });
 
+  // ---- Laender-Filter
+  for (const [id, mode] of [['cf-off', 'off'], ['cf-block', 'block'], ['cf-allow', 'allow']]) {
+    $(id).addEventListener('click', () => {
+      const f = activeFilter();
+      if (f.mode === mode) return;
+      // Modus wechseln, die Auswahl bleibt erhalten - so kann man zwischen
+      // "diese sperren" und "nur diese" hin und her schalten.
+      net.send({ t: 'setConfig', config: { countryFilter: { mode, codes: f.codes } } });
+      if (mode !== 'off' && !f.codes.length) openCountryModal();
+    });
+  }
+  $('cf-open').addEventListener('click', openCountryModal);
+
+  $('cm-mode-block').addEventListener('click', () => setCountryMode('block'));
+  $('cm-mode-allow').addEventListener('click', () => setCountryMode('allow'));
+  $('cm-search').addEventListener('input', renderCountryModal);
+  $('cm-search').addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    // Enter waehlt den ersten Treffer - so kann man Laender schnell durchtippen.
+    if (e.key !== 'Enter') return;
+    const first = $('cm-results').querySelector('li[data-code]');
+    if (first) {
+      toggleCountry(first.dataset.code);
+      $('cm-search').select();
+    }
+  });
+  $('cm-results').addEventListener('click', (e) => {
+    const focusBtn = e.target.closest('button[data-focus]');
+    if (focusBtn) return countryMap?.focus(focusBtn.dataset.focus);
+    const row = e.target.closest('li[data-code]');
+    if (row) toggleCountry(row.dataset.code);
+  });
+  $('cm-clear').addEventListener('click', () => {
+    cm.codes.clear();
+    pushCountryFilter();
+    renderCountryModal();
+  });
+  $('cm-close').addEventListener('click', closeCountryModal);
+  $('countrymodal').addEventListener('click', (e) => {
+    if (e.target === $('countrymodal')) closeCountryModal();
+  });
+
   $('lobby-start').addEventListener('click', async () => {
     if (!state?.config.words.length) return;
     if (state.config.startMode === 'pick' && !state.config.pickedLocation) {
@@ -758,9 +1017,21 @@ function wireStaticHandlers() {
     renderLobby();
     try {
       if (!mapsReady) { await loadMaps(apiKey); mapsReady = true; }
+      const filter = activeFilter();
+      if (filterActive(filter)) await ensureCountries({ rerender: false });
+
+      // Der gewaehlte Startort kann noch aus der Zeit vor dem Filter stammen.
+      const picked = state.config.pickedLocation;
+      if (state.config.startMode === 'pick' && picked && !isAllowed(picked.lat, picked.lng, filter)) {
+        startingGame = false;
+        renderLobby();
+        toast(rejectionReason(picked.lat, picked.lng, filter), 'warn');
+        return openMapPicker();
+      }
+
       // Bei 'pick' kennt der Server den Ort schon, bei 'freemap' gibt es bewusst keinen.
       const needsRandom = state.config.startMode === 'random' && state.config.sameStart;
-      const startLocation = needsRandom ? await findRandomLocation() : null;
+      const startLocation = needsRandom ? await findRandomLocation({ filter }) : null;
       net.send({ t: 'start', startLocation });
     } catch (err) {
       startingGame = false;
@@ -776,6 +1047,12 @@ function wireStaticHandlers() {
     if (btn.dataset.save) {
       const view = readView(gamePano);
       if (!view) return toast('Street View ist noch nicht bereit.', 'warn');
+      // Ueber die Pfeile kann man zu Fuss ueber eine Grenze laufen - hier
+      // faellt so ein Fund auf, bevor er in die Wertung kommt.
+      const filter = activeFilter();
+      if (!isAllowed(view.lat, view.lng, filter)) {
+        return toast(rejectionReason(view.lat, view.lng, filter), 'warn');
+      }
       net.send({ t: 'save', wordId: btn.dataset.save, view });
       const word = state.config.words.find((w) => w.id === btn.dataset.save);
       toast(`„${word?.text}“ gespeichert 📸`);
@@ -806,8 +1083,7 @@ function wireStaticHandlers() {
     if (confirm('Runde für alle beenden und zum Voting gehen?')) net.send({ t: 'endRound' });
   });
   $('sidebar-toggle').addEventListener('click', () => {
-    $('game-sidebar').classList.toggle('collapsed');
-    setTimeout(() => gamePano && google.maps.event.trigger(gamePano, 'resize'), 220);
+    setSidebarOpen($('game-sidebar').classList.contains('collapsed'));
   });
 
   // ---- Voting
@@ -832,6 +1108,7 @@ function wireStaticHandlers() {
     if (e.key === 'Escape') {
       closeModal();
       closeMapPicker();
+      closeCountryModal();
       closeGameMap();
       return;
     }
@@ -842,6 +1119,16 @@ function wireStaticHandlers() {
       else closeGameMap();
     }
   });
+}
+
+/**
+ * Die Wortliste liegt als halbtransparente Leiste ueber dem Panorama.
+ * Der body merkt sich den Zustand, damit die Karte im Spiel daneben aufgeht
+ * statt die Liste zuzudecken.
+ */
+function setSidebarOpen(open) {
+  $('game-sidebar').classList.toggle('collapsed', !open);
+  document.body.classList.toggle('sidebar-open', open);
 }
 
 function openModal(title, view) {
