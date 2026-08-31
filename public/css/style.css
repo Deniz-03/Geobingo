@@ -283,12 +283,23 @@ input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
 }
 /* Freistehender Text liegt jetzt praktisch direkt auf dem Panorama. Gedaempftes
    Grau verschwindet dort vor hellem Himmel - deshalb heller und mit Schatten. */
-.sidebar .timer, .sidebar .muted, .scoreboard-mini summary {
-  text-shadow: 0 1px 2px rgba(0, 0, 0, .95), 0 0 12px rgba(0, 0, 0, .8);
+/* Derselbe Schatten mehrfach gestapelt ergibt eine fast geschlossene dunkle
+   Kontur. Ein einzelner weicher Schatten reicht nicht: heller Text stuende
+   sonst vor hellem Himmel praktisch unsichtbar da. */
+.sidebar {
+  --halo:
+    0 0 2px rgba(0, 0, 0, .95), 0 0 2px rgba(0, 0, 0, .95),
+    0 0 4px rgba(0, 0, 0, .9), 0 1px 3px rgba(0, 0, 0, .95);
+}
+.sidebar .timer, .sidebar .muted, .sidebar .scoreboard-mini summary,
+.words.game .label, .words.game li .tag {
+  text-shadow: var(--halo);
 }
 .sidebar .muted, .sidebar .scoreboard-mini summary { color: rgba(233, 240, 247, .92); }
 .sidebar .progress { background: rgba(0, 0, 0, .45); }
-.sidebar .btn { background: rgba(29, 37, 48, .82); }
+/* :not(.primary) ist wichtig - sonst nimmt diese Regel dem "Merken"-Knopf
+   sein Orange und die dunkle Schrift steht auf dunklem Grund. */
+.sidebar .btn:not(.primary) { background: rgba(29, 37, 48, .82); }
 .sidebar .btn.ghost { background: rgba(13, 17, 23, .45); }
 
 .timer { font-size: 2.4rem; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
@@ -303,9 +314,11 @@ input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
 .words.game li {
   display: flex; align-items: center; gap: .6rem; width: 100%;
   border-radius: 10px; padding: .5rem .5rem .5rem .75rem;
-  border: 1px solid var(--line); background: var(--bg-3);
+  /* Auch die Eintraege sind fast durchsichtig; Kontur geben Rahmen und
+     Schlagschatten, Lesbarkeit gibt der Textschatten. */
+  border: 1px solid rgba(255, 255, 255, .22); background: rgba(29, 37, 48, .05);
 }
-.words.game li.done { border-color: var(--good); background: rgba(52, 211, 153, .10); }
+.words.game li.done { border-color: var(--good); background: rgba(52, 211, 153, .12); }
 /* break-word statt anywhere: normale Woerter bleiben ganz, nur wirklich
    ueberlange werden getrennt. */
 .words.game .label { flex: 1; min-width: 0; overflow-wrap: break-word; }
@@ -331,7 +344,7 @@ input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
 }
 body:not(.sidebar-open) .sidebar-toggle { left: .75rem; }
 
-.words.game li { box-shadow: 0 2px 8px rgba(0, 0, 0, .35); }
+.words.game li { box-shadow: 0 0 0 1px rgba(0, 0, 0, .45), 0 2px 8px rgba(0, 0, 0, .4); }
 
 .scoreboard-mini summary { cursor: pointer; color: var(--muted); font-size: .85rem; padding: .25rem 0; }
 .scoreboard-mini ul { margin-top: .5rem; }
