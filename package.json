@@ -1,0 +1,17 @@
+{
+  "name": "geobingo",
+  "version": "1.0.0",
+  "description": "GeoBingo - Street View Scavenger Hunt fuer mehrere Spieler, lokal gehostet",
+  "private": true,
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

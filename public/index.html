@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GeoBingo</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌍</text></svg>">
+</head>
+<body>
+
+<div id="connection-lost" class="banner hidden">Verbindung verloren – versuche neu zu verbinden…</div>
+<div id="toasts"></div>
+
+<!-- ============================================ SETUP (API-Key fehlt) -->
+<section id="screen-setup" class="screen center hidden">
+  <div class="card narrow">
+    <h1 class="logo">🌍 GeoBingo</h1>
+    <h2>Einmalige Einrichtung</h2>
+    <p class="muted">
+      GeoBingo braucht einen <b>Google Maps API-Key</b>, damit Street View funktioniert.
+      Den Key gibt es kostenlos, du musst bei Google aber ein Rechnungskonto hinterlegen.
+    </p>
+    <ol class="steps">
+      <li>Öffne die <a href="https://console.cloud.google.com/google/maps-apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a> und erstelle ein Projekt.</li>
+      <li>Aktiviere die APIs <b>Maps JavaScript API</b> und <b>Street View Static API</b>.</li>
+      <li>Erstelle unter „Anmeldedaten“ einen API-Schlüssel und kopiere ihn hier rein.</li>
+    </ol>
+    <div class="row">
+      <input id="setup-key" type="text" placeholder="AIza…" autocomplete="off" spellcheck="false">
+      <button id="setup-save" class="btn primary">Speichern</button>
+    </div>
+    <p id="setup-error" class="error hidden"></p>
+    <p class="muted small">
+      Der Key wird in <code>config.json</code> neben dem Spiel gespeichert und kann nur direkt am Host-PC
+      gesetzt werden. Details zum Absichern des Keys stehen in der README.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================ HOME -->
+<section id="screen-home" class="screen center hidden">
+  <div class="card narrow">
+    <h1 class="logo">🌍 GeoBingo</h1>
+    <p class="tagline">Finde die gesuchten Dinge in Street View, bevor die Zeit abläuft.</p>
+
+    <label class="field">
+      <span>Dein Name</span>
+      <input id="home-name" type="text" maxlength="18" placeholder="z.B. Deniz" autocomplete="nickname">
+    </label>
+
+    <button id="home-create" class="btn primary big">Neues Spiel erstellen</button>
+
+    <div class="divider"><span>oder</span></div>
+
+    <label class="field">
+      <span>Raum-Code</span>
+      <input id="home-code" type="text" maxlength="4" placeholder="ABCD" autocomplete="off" spellcheck="false" class="code-input">
+    </label>
+    <button id="home-join" class="btn big">Spiel beitreten</button>
+
+    <p id="home-error" class="error hidden"></p>
+  </div>
+</section>
+
+<!-- ============================================ LOBBY -->
+<section id="screen-lobby" class="screen hidden">
+  <div class="lobby-wrap">
+    <header class="lobby-head">
+      <h1 class="logo small">🌍 GeoBingo</h1>
+      <div class="roomcode">
+        <span class="muted small">Raum-Code</span>
+        <strong id="lobby-code">----</strong>
+        <button id="lobby-copy" class="btn tiny" title="Einladungslink kopieren">Link kopieren</button>
+      </div>
+    </header>
+
+    <div class="lobby-grid">
+      <!-- Spieler -->
+      <div class="card">
+        <h2>Spieler <span id="lobby-count" class="muted"></span></h2>
+        <ul id="lobby-players" class="players"></ul>
+        <p class="muted small">Freunde brauchen nur den Link oder den Raum-Code.</p>
+      </div>
+
+      <!-- Woerter -->
+      <div class="card">
+        <h2>Wörter <span id="lobby-wordcount" class="muted"></span></h2>
+
+        <div class="host-only">
+          <div class="row">
+            <input id="word-input" type="text" placeholder="Eigenes Wort… (Enter, oder mit Komma getrennt)" maxlength="60">
+            <button id="word-add" class="btn">+</button>
+          </div>
+          <div class="row wrap gap">
+            <label class="inline">
+              <span class="muted small">Zufällig</span>
+              <input id="rand-count" type="number" min="1" max="40" value="10" class="num">
+            </label>
+            <button id="word-random" class="btn">🎲 Zufallswörter hinzufügen</button>
+            <button id="word-clear" class="btn ghost">Alle löschen</button>
+          </div>
+        </div>
+
+        <ul id="word-list" class="words"></ul>
+        <p id="word-empty" class="muted small">Noch keine Wörter. Der Host fügt welche hinzu.</p>
+      </div>
+
+      <!-- Einstellungen -->
+      <div class="card">
+        <h2>Einstellungen</h2>
+        <div class="settings">
+          <div class="field">
+            <span>Startort</span>
+            <div class="segmented">
+              <button id="mode-random" class="seg active">🎲 Zufällig</button>
+              <button id="mode-pick" class="seg">📍 Host wählt</button>
+              <button id="mode-free" class="seg">🗺 Jeder selbst</button>
+            </div>
+          </div>
+          <div id="pick-row" class="pick-box hidden">
+            <img id="pick-thumb" class="pick-thumb hidden" alt="Gewählter Startort">
+            <div id="pick-info" class="muted small">Noch kein Ort gewählt.</div>
+            <button id="pick-open" class="btn full host-only">Karte öffnen</button>
+          </div>
+
+          <label class="field">
+            <span>Spielzeit: <b id="dur-label">10:00</b></span>
+            <input id="cfg-duration" type="range" min="1" max="60" step="1" value="10">
+          </label>
+          <label class="field">
+            <span>Bedenkzeit pro Voting: <b id="vote-label">30s</b></span>
+            <input id="cfg-voting" type="range" min="5" max="120" step="5" value="30">
+          </label>
+          <label class="check">
+            <input id="cfg-maptravel" type="checkbox" checked>
+            <span>Karte im Spiel erlaubt (jederzeit woanders hinreisen)</span>
+          </label>
+          <label class="check" id="samestart-row">
+            <input id="cfg-samestart" type="checkbox" checked>
+            <span>Alle starten am gleichen Ort</span>
+          </label>
+        </div>
+        <button id="lobby-start" class="btn primary big host-only">Spiel starten</button>
+        <p id="lobby-waiting" class="muted center-text">Warte auf den Host…</p>
+        <p id="lobby-status" class="muted small"></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================ GAME -->
+<section id="screen-game" class="screen hidden">
+  <div class="game-layout">
+    <aside class="sidebar" id="game-sidebar">
+      <div class="sidebar-head">
+        <div id="game-timer" class="timer">--:--</div>
+        <div class="progress"><div id="game-progress" class="progress-bar"></div></div>
+        <div id="game-found" class="muted small"></div>
+      </div>
+      <ul id="game-words" class="words game"></ul>
+      <div class="sidebar-foot">
+        <button id="game-map" class="btn ghost full">🗺 Karte öffnen <kbd>M</kbd></button>
+        <button id="game-end" class="btn ghost full host-only">Runde jetzt beenden</button>
+        <details class="scoreboard-mini">
+          <summary>Mitspieler</summary>
+          <ul id="game-players" class="players compact"></ul>
+        </details>
+      </div>
+    </aside>
+    <main class="stage">
+      <div id="pano-game" class="pano"></div>
+      <div id="pano-loading" class="pano-loading hidden"><div class="spinner"></div><span>Suche einen Ort…</span></div>
+      <button id="sidebar-toggle" class="sidebar-toggle" title="Wortliste ein-/ausblenden">☰</button>
+    </main>
+  </div>
+</section>
+
+<!-- ============================================ VOTING -->
+<section id="screen-vote" class="screen hidden">
+  <div class="vote-layout">
+    <header class="vote-head">
+      <div>
+        <span class="muted small">Gesucht war</span>
+        <h2 id="vote-word">—</h2>
+      </div>
+      <div class="vote-meta">
+        <div id="vote-progress" class="muted">1 / 1</div>
+        <div id="vote-timer" class="timer small">--</div>
+      </div>
+    </header>
+    <div class="vote-stage">
+      <div id="pano-vote" class="pano"></div>
+      <div id="vote-badge" class="vote-badge">Eingereicht von <b>—</b></div>
+    </div>
+    <footer class="vote-foot">
+      <div id="vote-actions" class="vote-actions">
+        <button id="vote-no" class="btn vote-btn no">👎 Passt nicht</button>
+        <button id="vote-yes" class="btn vote-btn yes">👍 Passt</button>
+      </div>
+      <div id="vote-own" class="muted center-text hidden">Deine eigene Einreichung – die anderen stimmen ab.</div>
+      <div id="vote-status" class="muted small center-text"></div>
+      <button id="vote-skip" class="btn tiny ghost host-only">Überspringen ▸</button>
+    </footer>
+  </div>
+</section>
+
+<!-- ============================================ RESULTS -->
+<section id="screen-results" class="screen hidden">
+  <div class="results-wrap">
+    <h1 class="logo small">🏆 Endstand</h1>
+
+    <div class="card">
+      <ol id="results-ranking" class="ranking"></ol>
+    </div>
+
+    <div class="card">
+      <h2>Alle Einreichungen</h2>
+      <div id="results-details" class="detail-grid"></div>
+    </div>
+
+    <div class="row center-row host-only">
+      <button id="results-again" class="btn primary">Neue Wörter &amp; nochmal</button>
+      <button id="results-lobby" class="btn">Zurück zur Lobby</button>
+    </div>
+    <p id="results-waiting" class="muted center-text">Warte auf den Host…</p>
+  </div>
+</section>
+
+<!-- ============================================ KARTE IM SPIEL -->
+<div id="gamemap" class="modal hidden">
+  <div class="modal-inner wide">
+    <header class="modal-head">
+      <div>
+        <h3 id="gamemap-title">Wohin willst du?</h3>
+        <span id="gamemap-hint" class="muted small">
+          Klick auf eine <b style="color:#4b8bf5">blaue Straße</b> – du landest sofort dort.
+        </span>
+      </div>
+      <div class="row">
+        <div id="gamemap-timer" class="timer small">--:--</div>
+        <button id="gamemap-close" class="btn tiny ghost">Schließen ✕</button>
+      </div>
+    </header>
+    <div class="gamemap-body">
+      <div id="gamemap-map" class="picker-map"></div>
+      <div class="gamemap-bar">
+        <input id="gamemap-coords" type="text" placeholder="oder Koordinaten: 48.8584, 2.2945" autocomplete="off" spellcheck="false">
+        <button id="gamemap-go" class="btn">Los</button>
+        <span id="gamemap-status" class="small"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================ KARTEN-AUSWAHL -->
+<div id="mapmodal" class="modal hidden">
+  <div class="modal-inner wide">
+    <header class="modal-head">
+      <h3>Startort wählen</h3>
+      <button id="mapmodal-close" class="btn tiny ghost">Schließen ✕</button>
+    </header>
+    <div class="picker">
+      <div id="picker-map" class="picker-map"></div>
+      <aside class="picker-side">
+        <div id="picker-pano" class="picker-pano"></div>
+        <div id="picker-empty" class="picker-empty">Noch nichts ausgewählt</div>
+        <p id="picker-hint" class="muted small">
+          Klick auf die Karte. Die <b style="color:#4b8bf5">blau markierten</b> Straßen haben
+          Street View – überall sonst gibt es keine Bilder.
+        </p>
+        <div class="field">
+          <span>oder Koordinaten einfügen</span>
+          <div class="row">
+            <input id="picker-coords" type="text" placeholder="48.8584, 2.2945" autocomplete="off" spellcheck="false">
+            <button id="picker-go" class="btn">Los</button>
+          </div>
+          <span class="muted small">In Google Maps: Rechtsklick auf den Ort → Koordinaten anklicken zum Kopieren.</span>
+        </div>
+        <p id="picker-status" class="small"></p>
+        <button id="picker-confirm" class="btn primary full" disabled>Diesen Ort übernehmen</button>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================ MODAL -->
+<div id="modal" class="modal hidden">
+  <div class="modal-inner">
+    <header class="modal-head">
+      <h3 id="modal-title">Vorschau</h3>
+      <button id="modal-close" class="btn tiny ghost">Schließen ✕</button>
+    </header>
+    <div id="pano-modal" class="pano"></div>
+  </div>
+</div>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

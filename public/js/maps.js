@@ -1,0 +1,275 @@
+// Alles rund um Google Street View: Laden der API, Zufallsorte finden,
+// Panoramen erzeugen und Standbilder fuer die Vorschau bauen.
+
+let apiKey = '';
+let loadPromise = null;
+
+/** Regionen mit guter Street-View-Abdeckung. weight = wie oft gezogen wird. */
+const REGIONS = [
+  { name: 'Westeuropa',      lat: [43.0, 55.0],   lng: [-5.0, 15.0],    weight: 20 },
+  { name: 'Grossbritannien', lat: [50.0, 58.5],   lng: [-9.0, 1.8],     weight: 9 },
+  { name: 'Nordeuropa',      lat: [55.0, 65.0],   lng: [5.0, 26.0],     weight: 8 },
+  { name: 'Sued-/Osteuropa', lat: [36.0, 49.0],   lng: [12.0, 30.0],    weight: 11 },
+  { name: 'USA',             lat: [30.0, 48.0],   lng: [-124.0, -70.0], weight: 20 },
+  { name: 'Kanada',          lat: [43.0, 52.0],   lng: [-124.0, -60.0], weight: 6 },
+  { name: 'Mexiko',          lat: [16.0, 30.0],   lng: [-110.0, -88.0], weight: 5 },
+  { name: 'Brasilien',       lat: [-30.0, -5.0],  lng: [-55.0, -38.0],  weight: 9 },
+  { name: 'Argentinien',     lat: [-40.0, -24.0], lng: [-70.0, -55.0],  weight: 6 },
+  { name: 'Suedafrika',      lat: [-34.5, -25.0], lng: [18.0, 31.5],    weight: 5 },
+  { name: 'Japan',           lat: [31.0, 43.5],   lng: [130.0, 145.0],  weight: 9 },
+  { name: 'Australien',      lat: [-38.5, -25.0], lng: [115.0, 153.5],  weight: 8 },
+  { name: 'Neuseeland',      lat: [-46.5, -35.0], lng: [167.0, 178.5],  weight: 4 },
+  { name: 'Suedostasien',    lat: [-8.5, 20.0],   lng: [96.0, 125.0],   weight: 8 },
+  { name: 'Indien',          lat: [8.0, 30.0],    lng: [70.0, 88.5],    weight: 7 },
+  { name: 'Tuerkei',         lat: [36.0, 41.5],   lng: [27.0, 42.0],    weight: 4 },
+  { name: 'Russland',        lat: [44.0, 60.0],   lng: [30.0, 60.0],    weight: 5 },
+  { name: 'Taiwan',          lat: [22.0, 25.2],   lng: [120.0, 122.0],  weight: 3 },
+  { name: 'Chile',           lat: [-42.0, -30.0], lng: [-73.5, -70.0],  weight: 3 },
+];
+
+const TOTAL_WEIGHT = REGIONS.reduce((n, r) => n + r.weight, 0);
+
+function randomPoint() {
+  let roll = Math.random() * TOTAL_WEIGHT;
+  let region = REGIONS[0];
+  for (const r of REGIONS) {
+    roll -= r.weight;
+    if (roll <= 0) { region = r; break; }
+  }
+  return {
+    lat: region.lat[0] + Math.random() * (region.lat[1] - region.lat[0]),
+    lng: region.lng[0] + Math.random() * (region.lng[1] - region.lng[0]),
+  };
+}
+
+/** Laedt die Maps JavaScript API genau einmal. */
+export function loadMaps(key) {
+  apiKey = key;
+  if (loadPromise) return loadPromise;
+
+  loadPromise = new Promise((resolve, reject) => {
+    if (window.google?.maps?.StreetViewPanorama) return resolve(window.google.maps);
+
+    const cbName = '__geobingoMapsReady';
+    window[cbName] = () => {
+      delete window[cbName];
+      resolve(window.google.maps);
+    };
+
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&loading=async&callback=${cbName}`;
+    script.async = true;
+    script.onerror = () => reject(new Error('Google Maps konnte nicht geladen werden. Ist der API-Key korrekt?'));
+    document.head.appendChild(script);
+
+    // Google meldet Key-Fehler nur ueber die Konsole - deshalb ein Timeout als Notbremse.
+    setTimeout(() => reject(new Error('Zeitueberschreitung beim Laden von Google Maps.')), 20000);
+  });
+
+  return loadPromise;
+}
+
+function getPanoramaAt(service, request) {
+  return new Promise((resolve, reject) => {
+    service.getPanorama(request, (data, status) => {
+      if (status === 'OK' && data?.location) resolve(data);
+      else reject(new Error(String(status)));
+    });
+  });
+}
+
+/**
+ * Sucht einen zufaelligen Ort mit Street-View-Abdeckung.
+ * Fragt mehrere Kandidaten parallel ab, damit es schnell geht.
+ */
+export async function findRandomLocation({ batches = 12, perBatch = 4, radius = 60000 } = {}) {
+  const service = new google.maps.StreetViewService();
+  const source = google.maps.StreetViewSource?.OUTDOOR || 'outdoor';
+
+  for (let i = 0; i < batches; i++) {
+    const tries = Array.from({ length: perBatch }, () =>
+      getPanoramaAt(service, { location: randomPoint(), radius, source })
+    );
+    const settled = await Promise.allSettled(tries);
+    const hit = settled.find((r) => r.status === 'fulfilled');
+    if (hit) {
+      const data = hit.value;
+      return {
+        pano: data.location.pano,
+        lat: data.location.latLng.lat(),
+        lng: data.location.latLng.lng(),
+        heading: Math.random() * 360,
+        pitch: 0,
+        zoom: 0,
+      };
+    }
+  }
+  throw new Error('Kein Street-View-Ort gefunden. Bitte nochmal versuchen.');
+}
+
+/** Peilung von einem Punkt zum anderen - damit die Kamera dahin schaut, wo geklickt wurde. */
+function bearingBetween(from, to) {
+  const rad = Math.PI / 180;
+  const dLng = (to.lng - from.lng) * rad;
+  const y = Math.sin(dLng) * Math.cos(to.lat * rad);
+  const x = Math.cos(from.lat * rad) * Math.sin(to.lat * rad) -
+            Math.sin(from.lat * rad) * Math.cos(to.lat * rad) * Math.cos(dLng);
+  return (Math.atan2(y, x) / rad + 360) % 360;
+}
+
+/**
+ * Sucht das naechstgelegene Panorama zu einem angeklickten Punkt.
+ * Der Radius wird schrittweise erweitert, falls direkt daneben nichts liegt.
+ */
+export async function findPanoramaNear(lat, lng, radii = [80, 400, 2000]) {
+  const service = new google.maps.StreetViewService();
+  const source = google.maps.StreetViewSource?.OUTDOOR || 'outdoor';
+
+  for (const radius of radii) {
+    try {
+      const data = await getPanoramaAt(service, { location: { lat, lng }, radius, source });
+      const pos = { lat: data.location.latLng.lat(), lng: data.location.latLng.lng() };
+      return {
+        pano: data.location.pano,
+        lat: pos.lat,
+        lng: pos.lng,
+        // Blick in Richtung des angeklickten Punktes
+        heading: bearingBetween(pos, { lat, lng }),
+        pitch: 0,
+        zoom: 0,
+        description: data.location.description || data.location.shortDescription || null,
+      };
+    } catch {
+      /* nichts in diesem Radius - weiter */
+    }
+  }
+  throw new Error('Hier gibt es kein Street View. Klick auf eine blau markierte Strasse.');
+}
+
+/**
+ * Karte zum Aussuchen des Startorts. Die blauen Linien zeigen, wo Street View existiert.
+ * onPick bekommt die angeklickten Koordinaten.
+ */
+export function createPickerMap(el, center, onPick) {
+  const map = new google.maps.Map(el, {
+    center: center || { lat: 30, lng: 5 },
+    zoom: center ? 15 : 2,
+    minZoom: 2,
+    streetViewControl: false,
+    mapTypeControl: true,
+    fullscreenControl: false,
+    clickableIcons: false,
+    gestureHandling: 'greedy',
+  });
+
+  new google.maps.StreetViewCoverageLayer().setMap(map);
+
+  const marker = new google.maps.Marker({ map, position: center || null, visible: !!center });
+
+  map.addListener('click', (e) => onPick(e.latLng.lat(), e.latLng.lng()));
+
+  return {
+    map,
+    /** Setzt die Markierung auf die tatsaechlich gefundene Panorama-Position. */
+    mark(lat, lng) {
+      marker.setPosition({ lat, lng });
+      marker.setVisible(true);
+    },
+    center(lat, lng, zoom) {
+      map.setCenter({ lat, lng });
+      if (zoom) map.setZoom(zoom);
+    },
+    resize() {
+      google.maps.event.trigger(map, 'resize');
+    },
+  };
+}
+
+const BASE_OPTIONS = {
+  addressControl: false,
+  fullscreenControl: false,
+  motionTracking: false,
+  motionTrackingControl: false,
+  enableCloseButton: false,
+  imageDateControl: false,
+  showRoadLabels: true,
+};
+
+/** Interaktives Panorama zum Spielen (Bewegen erlaubt). */
+export function createGamePanorama(el, view) {
+  const pano = new google.maps.StreetViewPanorama(el, {
+    ...BASE_OPTIONS,
+    ...positionOf(view),
+    pov: { heading: view?.heading ?? 0, pitch: view?.pitch ?? 0 },
+    zoom: view?.zoom ?? 0,
+    linksControl: true,
+    clickToGo: true,
+    panControl: true,
+    zoomControl: true,
+    scrollwheel: true,
+  });
+  return pano;
+}
+
+/** Nur-Ansicht-Panorama fuers Voting: umschauen ja, weglaufen nein. */
+export function createViewPanorama(el, view) {
+  return new google.maps.StreetViewPanorama(el, {
+    ...BASE_OPTIONS,
+    ...positionOf(view),
+    pov: { heading: view?.heading ?? 0, pitch: view?.pitch ?? 0 },
+    zoom: view?.zoom ?? 0,
+    linksControl: false,
+    clickToGo: false,
+    disableDoubleClickZoom: true,
+    panControl: true,
+    zoomControl: true,
+    scrollwheel: true,
+  });
+}
+
+function positionOf(view) {
+  if (!view) return { position: { lat: 48.8584, lng: 2.2945 } };
+  if (view.pano) return { pano: view.pano };
+  return { position: { lat: view.lat, lng: view.lng } };
+}
+
+/** Springt ein bestehendes Panorama an eine gespeicherte Ansicht. */
+export function applyView(pano, view) {
+  if (!pano || !view) return;
+  if (view.pano) pano.setPano(view.pano);
+  else if (view.lat != null) pano.setPosition({ lat: view.lat, lng: view.lng });
+  pano.setPov({ heading: view.heading ?? 0, pitch: view.pitch ?? 0 });
+  pano.setZoom(view.zoom ?? 0);
+}
+
+/** Liest die aktuelle Ansicht aus - genau das wird als "Fund" gespeichert. */
+export function readView(pano) {
+  if (!pano) return null;
+  const pos = pano.getPosition();
+  const pov = pano.getPov() || { heading: 0, pitch: 0 };
+  return {
+    pano: pano.getPano() || null,
+    lat: pos ? pos.lat() : null,
+    lng: pos ? pos.lng() : null,
+    heading: pov.heading || 0,
+    pitch: pov.pitch || 0,
+    zoom: pano.getZoom() || 0,
+  };
+}
+
+/** Standbild fuer Vorschau-Kacheln (Street View Static API). */
+export function thumbnailUrl(view, width = 400, height = 250) {
+  if (!view || !apiKey) return '';
+  const fov = Math.max(10, Math.min(120, 180 / Math.pow(2, view.zoom || 0)));
+  const params = new URLSearchParams({
+    size: `${width}x${height}`,
+    heading: String(Math.round(view.heading || 0)),
+    pitch: String(Math.round(view.pitch || 0)),
+    fov: String(Math.round(fov)),
+    key: apiKey,
+    return_error_code: 'true',
+  });
+  if (view.pano) params.set('pano', view.pano);
+  else params.set('location', `${view.lat},${view.lng}`);
+  return `https://maps.googleapis.com/maps/api/streetview?${params}`;
+}
