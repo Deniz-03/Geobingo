@@ -64,28 +64,63 @@ window.gm_authFailure = () => {
   );
 };
 
-/** Laedt die Maps JavaScript API genau einmal. */
+// Auf einem langsamen Handy im Mobilfunknetz braucht die Maps-API auch mal
+// eine halbe Minute. Laeuft die Zeit ab, ist das kein endgueltiges Nein:
+// beim naechsten Versuch wird einfach weiter gewartet.
+const MAPS_TIMEOUT_MS = 30000;
+const MAPS_CALLBACK = '__geobingoMapsReady';
+let mapsScript = null;
+
+/**
+ * Laedt die Maps JavaScript API. Das Script wird nur einmal eingehaengt,
+ * ein fehlgeschlagener Versuch merkt sich aber nichts: sonst blieben Karten
+ * und Street View fuer den Rest der Sitzung tot, obwohl das Script kurz nach
+ * dem Zeitlimit doch noch fertig geworden ist.
+ */
 export function loadMaps(key) {
   apiKey = key;
+  if (window.google?.maps?.StreetViewPanorama) return Promise.resolve(window.google.maps);
   if (loadPromise) return loadPromise;
 
   loadPromise = new Promise((resolve, reject) => {
-    if (window.google?.maps?.StreetViewPanorama) return resolve(window.google.maps);
+    let poll = null;
+    const settle = (fn) => (value) => {
+      clearInterval(poll);
+      fn(value);
+    };
+    const done = settle(() => resolve(window.google.maps));
+    const fail = settle((err) => {
+      loadPromise = null; // naechster Aufruf darf es nochmal versuchen
+      reject(err);
+    });
 
-    const cbName = '__geobingoMapsReady';
-    window[cbName] = () => {
-      delete window[cbName];
-      resolve(window.google.maps);
+    window[MAPS_CALLBACK] = () => {
+      delete window[MAPS_CALLBACK];
+      done();
     };
 
-    const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&loading=async&callback=${cbName}`;
-    script.async = true;
-    script.onerror = () => reject(new Error('Google Maps konnte nicht geladen werden. Ist der API-Key korrekt?'));
-    document.head.appendChild(script);
+    if (!mapsScript) {
+      mapsScript = document.createElement('script');
+      mapsScript.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}`
+        + `&v=weekly&loading=async&callback=${MAPS_CALLBACK}`;
+      mapsScript.async = true;
+      mapsScript.onerror = () => {
+        mapsScript.remove();
+        mapsScript = null; // wirklich kaputt - beim naechsten Mal neu einhaengen
+        fail(new Error('Google Maps konnte nicht geladen werden. Ist der API-Key korrekt?'));
+      };
+      document.head.appendChild(mapsScript);
+    }
 
-    // Google meldet Key-Fehler nur ueber die Konsole - deshalb ein Timeout als Notbremse.
-    setTimeout(() => reject(new Error('Zeitueberschreitung beim Laden von Google Maps.')), 20000);
+    // Der Rueckruf kann verloren gehen (zweiter Versuch, abgebrochenes Laden).
+    // Deshalb zusaetzlich nachsehen, ob die API inzwischen einfach da ist.
+    const until = Date.now() + MAPS_TIMEOUT_MS;
+    poll = setInterval(() => {
+      if (window.google?.maps?.StreetViewPanorama) return done();
+      if (Date.now() > until) {
+        fail(new Error('Google Maps lädt ungewöhnlich lange. Gleich nochmal versuchen.'));
+      }
+    }, 400);
   });
 
   return loadPromise;

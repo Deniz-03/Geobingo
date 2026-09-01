@@ -91,6 +91,24 @@ function showScreen(name) {
 // ---------------------------------------------------------------- Start
 
 /**
+ * Sorgt dafuer, dass die Maps-API da ist, bevor jemand sie benutzt.
+ * Ein Fehlschlag ist nicht endgueltig - loadMaps() wartet beim naechsten
+ * Aufruf einfach weiter. Deshalb ruft das hier jede Stelle auf, die eine
+ * Karte oder ein Panorama braucht, statt sich auf den Start zu verlassen.
+ */
+async function ensureMaps({ quiet = false } = {}) {
+  if (mapsReady) return true;
+  try {
+    await loadMaps(apiKey);
+    mapsReady = true;
+    return true;
+  } catch (err) {
+    if (!quiet) toast(err.message, 'error');
+    return false;
+  }
+}
+
+/**
  * Holt die Server-Konfiguration und gibt nicht beim ersten Fehlversuch auf.
  * Durch einen Tunnel kommt der allererste Aufruf gern als Fehlerseite zurueck -
  * ohne diese Schleife haenge man dann auf einer toten Startseite fest.
@@ -135,9 +153,7 @@ async function boot() {
   }
 
   apiKey = cfg.apiKey;
-  loadMaps(apiKey)
-    .then(() => { mapsReady = true; })
-    .catch((err) => toast(err.message, 'error'));
+  ensureMaps({ quiet: true }); // laeuft nebenher, Meldung kommt spaeter beim Benutzen
 
   $('home-name').value = store.name;
   const codeFromUrl = (location.hash || '').replace('#', '').toUpperCase().trim();
@@ -404,8 +420,8 @@ async function openCountryModal() {
   setCmStatus('Länderkarte wird geladen…');
   renderCountryModal();
 
-  if (!mapsReady) {
-    try { await loadMaps(apiKey); mapsReady = true; } catch (err) { return setCmStatus(err.message); }
+  if (!(await ensureMaps({ quiet: true }))) {
+    return setCmStatus('Google Maps ist noch nicht bereit. Fenster schließen und gleich nochmal öffnen.');
   }
   if (!(await ensureCountries({ rerender: false, retry: true }))) {
     return setCmStatus('Die Länderkarte konnte nicht geladen werden. Fenster schließen und nochmal öffnen versucht es erneut.');
@@ -518,9 +534,7 @@ function applyCoverage() {
 }
 
 async function openMapPicker() {
-  if (!mapsReady) {
-    try { await loadMaps(apiKey); mapsReady = true; } catch (err) { return toast(err.message, 'error'); }
-  }
+  if (!(await ensureMaps())) return;
   const existing = state?.config.pickedLocation;
   pickedCandidate = null;
   $('picker-confirm').disabled = true;
@@ -646,10 +660,20 @@ function renderGame() {
     </li>`).join('');
 }
 
-async function initGamePanorama() {
-  if (!mapsReady) {
-    try { await loadMaps(apiKey); mapsReady = true; } catch (err) { return toast(err.message, 'error'); }
+async function initGamePanorama(attempt = 1) {
+  // Ohne Maps-API bliebe der Spielbildschirm wortlos schwarz. Ein Fehlschlag
+  // ist aber selten endgueltig - meist ist die Leitung nur langsam.
+  setPanoLoading(true);
+  if (!(await ensureMaps({ quiet: attempt < 3 }))) {
+    if (state?.phase !== 'playing') return setPanoLoading(false);
+    if (attempt < 3) {
+      setTimeout(() => initGamePanorama(attempt + 1), 2000);
+      return;
+    }
+    setPanoLoading(false);
+    return toast('Street View lädt nicht. Meist hilft die Seite neu zu laden.', 'error');
   }
+  setPanoLoading(false);
 
   // Nach einem Reload dort weitermachen, wo man war.
   const saved = loadPosition();
@@ -731,9 +755,7 @@ let firstPickPending = false;
 async function openGameMap(firstPick = false) {
   if (state?.phase !== 'playing') return;
   if (!firstPick && !state.config.mapTravel) return;
-  if (!mapsReady) {
-    try { await loadMaps(apiKey); mapsReady = true; } catch (err) { return toast(err.message, 'error'); }
-  }
+  if (!(await ensureMaps())) return;
 
   firstPickPending = firstPick;
   $('gamemap-title').textContent = firstPick ? 'Such dir einen Startpunkt' : 'Wohin willst du?';
@@ -811,13 +833,21 @@ function renderVoting() {
   $('vote-badge').innerHTML = item ? `Eingereicht von <b>${esc(item.playerName)}</b>` : '';
 
   if (item && item.id !== lastVoteItemId) {
-    lastVoteItemId = item.id;
-    const el = $('pano-vote');
-    if (!votePano) votePano = createViewPanorama(el, item.view);
-    else applyView(votePano, item.view);
-    // Kein rAF: im Hintergrund-Tab wuerde es nie feuern und das Panorama
-    // haette fuer immer die Groesse 0 - genau dann bleibt der Ausschnitt leer.
-    setTimeout(() => google.maps.event.trigger(votePano, 'resize'), 0);
+    if (mapsReady) {
+      lastVoteItemId = item.id;
+      const el = $('pano-vote');
+      if (!votePano) votePano = createViewPanorama(el, item.view);
+      else applyView(votePano, item.view);
+      // Kein rAF: im Hintergrund-Tab wuerde es nie feuern und das Panorama
+      // haette fuer immer die Groesse 0 - genau dann bleibt der Ausschnitt leer.
+      setTimeout(() => google.maps.event.trigger(votePano, 'resize'), 0);
+    } else {
+      // Ohne Maps-API gaebe es hier einen Absturz mitten im Rendern - dann
+      // haengt der ganze Voting-Screen. Lieber nachladen und neu zeichnen.
+      ensureMaps().then((ok) => {
+        if (ok && state?.phase === 'voting') renderVoting();
+      });
+    }
   }
 
   $('vote-actions').classList.toggle('hidden', !v.canVote);
@@ -1079,7 +1109,7 @@ function wireStaticHandlers() {
     startingGame = true;
     renderLobby();
     try {
-      if (!mapsReady) { await loadMaps(apiKey); mapsReady = true; }
+      if (!(await ensureMaps({ quiet: true }))) throw new Error('Google Maps lädt noch. Gleich nochmal versuchen.');
       const filter = activeFilter();
       if (filterActive(filter)) await ensureCountries({ rerender: false });
 
@@ -1201,9 +1231,10 @@ function setSidebarOpen(open) {
   document.body.classList.toggle('sidebar-open', open);
 }
 
-function openModal(title, view) {
+async function openModal(title, view) {
   $('modal-title').textContent = title;
   $('modal').classList.remove('hidden');
+  if (!(await ensureMaps())) return;
   setTimeout(() => {
     if (!modalPano) modalPano = createViewPanorama($('pano-modal'), view);
     else {
