@@ -109,6 +109,12 @@ Bei jedem Neustart bekommst du eine neue Adresse – die alte funktioniert dann 
 > Seitenquelltext sehen. Deshalb unbedingt vorher das Kontingentlimit aus Schritt 3 setzen. Den Key
 > ändern kann von außen niemand – das geht nur direkt an deinem PC.
 
+> **Finger weg von `localtunnel`** (`lt --port 8080 --subdomain …`). Der öffentliche Dienst
+> dahinter ist überlastet: er antwortet oft mit `503 - Tunnel Unavailable`, bricht große
+> Antworten wie die 1,4 MB Länderkarte mittendrin ab und kommt mit vielen gleichzeitigen
+> Verbindungen (jeder Mitspieler hält eine offene WebSocket-Verbindung) nicht zurecht. Genau so
+> entstehen die Bilder, die „mal laden und mal nicht“. Cloudflare macht das zuverlässig.
+
 ### c) Übers Internet – ngrok
 
 ```bash
@@ -202,6 +208,7 @@ Lobby.
 | Ort direkt an einer Grenze wird dem falschen Land zugeordnet | Die Landesgrenzen sind vereinfacht (siehe unten), auf ein paar hundert Meter genau |
 | Freunde im WLAN kommen nicht drauf | Windows-Firewall blockt Node.js |
 | Freunde über Tunnel kommen nicht drauf | Tunnel-Fenster geschlossen, Adresse gilt nur solange es läuft |
+| Über den Tunnel lädt mal die Länderkarte nicht, mal ein Street-View-Bild, mal gar nichts | Der Tunnel selbst schwächelt. `localtunnel` (`lt --port 8080`) fällt regelmäßig auf `503 - Tunnel Unavailable` und verträgt die vielen gleichzeitigen Verbindungen schlecht – nimm `tunnel.bat` (Cloudflare) |
 
 ## 9. Aufbau
 

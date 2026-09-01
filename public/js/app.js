@@ -1,7 +1,7 @@
 import * as net from './net.js';
 import {
-  loadMaps, findRandomLocation, findPanoramaNear, createGamePanorama, createViewPanorama,
-  createPickerMap, createCountryMap, applyView, readView, thumbnailUrl,
+  loadMaps, onMapsAuthError, findRandomLocation, findPanoramaNear, createGamePanorama,
+  createViewPanorama, createPickerMap, createCountryMap, applyView, readView, thumbnailUrl,
 } from './maps.js';
 import {
   loadCountries, countriesReady, allCountries, namesFor,
@@ -64,6 +64,10 @@ const store = {
   set name(v) { localStorage.setItem('geobingo:name', v); },
   pid(room) { return sessionStorage.getItem(`geobingo:pid:${room}`) || null; },
   setPid(room, id) { sessionStorage.setItem(`geobingo:pid:${room}`, id); },
+  // Blaue Street-View-Linien auf den Karten - reine Ansichtssache, gilt
+  // geraeteweit und ueberlebt das Neuladen.
+  get coverage() { return localStorage.getItem('geobingo:coverage') !== 'off'; },
+  set coverage(on) { localStorage.setItem('geobingo:coverage', on ? 'on' : 'off'); },
 };
 
 // ---------------------------------------------------------------- Screens
@@ -76,25 +80,47 @@ function showScreen(name) {
   activeScreen = name;
   SCREENS.forEach((s) => $(`screen-${s}`).classList.toggle('hidden', s !== name));
   // Panoramen brauchen sichtbare Container, sonst rendern sie in 0x0.
-  requestAnimationFrame(() => {
+  // setTimeout statt requestAnimationFrame: liegt der Tab im Hintergrund
+  // (Handy gesperrt, anderer Tab), feuert rAF nie - das Panorama bliebe grau.
+  setTimeout(() => {
     if (name === 'game' && gamePano) google.maps.event.trigger(gamePano, 'resize');
     if (name === 'vote' && votePano) google.maps.event.trigger(votePano, 'resize');
-  });
+  }, 0);
 }
 
 // ---------------------------------------------------------------- Start
 
+/**
+ * Holt die Server-Konfiguration und gibt nicht beim ersten Fehlversuch auf.
+ * Durch einen Tunnel kommt der allererste Aufruf gern als Fehlerseite zurueck -
+ * ohne diese Schleife haenge man dann auf einer toten Startseite fest.
+ */
+async function fetchConfig() {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await fetch('/api/config', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const cfg = await res.json();
+      $('home-error').classList.add('hidden');
+      return cfg;
+    } catch {
+      if (attempt === 1) toast('Server nicht erreichbar – versuche es weiter…', 'error');
+      $('home-error').textContent =
+        'Keine Verbindung zum Spiel-Server. Läuft er noch, und steht der Tunnel? Es wird weiter versucht…';
+      $('home-error').classList.remove('hidden');
+      showScreen('home');
+      await new Promise((r) => setTimeout(r, Math.min(8000, 700 * attempt)));
+    }
+  }
+}
+
 async function boot() {
   wireStaticHandlers();
   setSidebarOpen(true);
+  applyCoverage();
+  onMapsAuthError((message) => toast(message, 'error'));
 
-  let cfg;
-  try {
-    cfg = await (await fetch('/api/config')).json();
-  } catch {
-    toast('Server nicht erreichbar.', 'error');
-    return;
-  }
+  const cfg = await fetchConfig();
 
   if (!cfg.hasKey) {
     showScreen('setup');
@@ -287,8 +313,12 @@ function activeFilter() {
  * Alle Aufrufer haengen sich an denselben Ladevorgang; sonst gaebe es bei
  * einem Fehler eine Meldung pro Aufruf.
  */
-function ensureCountries({ rerender = true } = {}) {
+function ensureCountries({ rerender = true, retry = false } = {}) {
   if (countriesReady()) return Promise.resolve(true);
+  // Nach einem Fehlschlag wird nicht von allein weiterprobiert (sonst haette
+  // man die Meldung mehrfach). Ein neuer Anlauf beginnt erst, wenn jemand die
+  // Laenderkarte wieder oeffnet - Tunnel-Aussetzer sind meist voruebergehend.
+  if (retry) countryLoadFailed = false;
   if (countryLoadFailed) return Promise.resolve(false);
   if (!countryLoad) {
     countryLoad = loadCountries()
@@ -377,8 +407,8 @@ async function openCountryModal() {
   if (!mapsReady) {
     try { await loadMaps(apiKey); mapsReady = true; } catch (err) { return setCmStatus(err.message); }
   }
-  if (!(await ensureCountries({ rerender: false }))) {
-    return setCmStatus('Die Länderkarte konnte nicht geladen werden.');
+  if (!(await ensureCountries({ rerender: false, retry: true }))) {
+    return setCmStatus('Die Länderkarte konnte nicht geladen werden. Fenster schließen und nochmal öffnen versucht es erneut.');
   }
   setCmStatus('Tipp: Land anklicken zum Aus- und Abwählen.');
   renderCountryModal();
@@ -463,6 +493,30 @@ function applyFilterToMap(mapHandle, hintId) {
 
 // ---- Startort auf der Karte auswaehlen ------------------------------------
 
+/**
+ * Die blauen Linien zeigen, wo es Street View gibt - auf der Karte legen sie
+ * sich aber ueber alles drueber. Der Schalter blendet nur die Anzeige aus:
+ * gesucht, gesprungen und geprueft wird genau wie vorher.
+ */
+function applyCoverage() {
+  const on = store.coverage;
+  picker?.setCoverage(on);
+  gameMap?.setCoverage(on);
+
+  for (const id of ['picker-coverage', 'gamemap-coverage']) {
+    $(id).textContent = on ? '🔵 Blaue Linien: an' : '🔵 Blaue Linien: aus';
+    $(id).classList.toggle('off', !on);
+  }
+  $('picker-hint').innerHTML = on
+    ? 'Klick auf die Karte. Die <b style="color:#4b8bf5">blau markierten</b> Straßen haben '
+      + 'Street View – überall sonst gibt es keine Bilder.'
+    : 'Klick auf die Karte – gesucht wird der nächstgelegene Street-View-Ort. '
+      + 'Ohne die blauen Linien siehst du vorher nicht, wo es welche gibt.';
+  $('gamemap-hint').textContent = on
+    ? 'Klick auf eine blaue Straße – du landest sofort dort.'
+    : 'Klick auf die Karte – du landest am nächstgelegenen Street-View-Ort.';
+}
+
 async function openMapPicker() {
   if (!mapsReady) {
     try { await loadMaps(apiKey); mapsReady = true; } catch (err) { return toast(err.message, 'error'); }
@@ -479,7 +533,7 @@ async function openMapPicker() {
   setTimeout(() => {
     const center = existing && existing.lat != null ? { lat: existing.lat, lng: existing.lng } : null;
     if (!picker) {
-      picker = createPickerMap($('picker-map'), center, onMapPick);
+      picker = createPickerMap($('picker-map'), center, onMapPick, { coverage: store.coverage });
       // Sicherheitsnetz: falls der Container beim Erzeugen noch nicht vermessen war.
       setTimeout(() => picker.resize(), 80);
     } else {
@@ -693,7 +747,7 @@ async function openGameMap(firstPick = false) {
     const here = readView(gamePano);
     const center = here && here.lat != null ? { lat: here.lat, lng: here.lng } : null;
     if (!gameMap) {
-      gameMap = createPickerMap($('gamemap-map'), center, onGameMapPick);
+      gameMap = createPickerMap($('gamemap-map'), center, onGameMapPick, { coverage: store.coverage });
       setTimeout(() => gameMap.resize(), 80);
     } else {
       gameMap.resize();
@@ -761,7 +815,9 @@ function renderVoting() {
     const el = $('pano-vote');
     if (!votePano) votePano = createViewPanorama(el, item.view);
     else applyView(votePano, item.view);
-    requestAnimationFrame(() => google.maps.event.trigger(votePano, 'resize'));
+    // Kein rAF: im Hintergrund-Tab wuerde es nie feuern und das Panorama
+    // haette fuer immer die Groesse 0 - genau dann bleibt der Ausschnitt leer.
+    setTimeout(() => google.maps.event.trigger(votePano, 'resize'), 0);
   }
 
   $('vote-actions').classList.toggle('hidden', !v.canVote);
@@ -962,6 +1018,13 @@ function wireStaticHandlers() {
   $('picker-go').addEventListener('click', gotoCoords);
   $('picker-coords').addEventListener('keydown', (e) => { if (e.key === 'Enter') gotoCoords(); });
 
+  for (const id of ['picker-coverage', 'gamemap-coverage']) {
+    $(id).addEventListener('click', () => {
+      store.coverage = !store.coverage;
+      applyCoverage();
+    });
+  }
+
   $('mapmodal-close').addEventListener('click', closeMapPicker);
   $('mapmodal').addEventListener('click', (e) => { if (e.target === $('mapmodal')) closeMapPicker(); });
 
@@ -1094,6 +1157,13 @@ function wireStaticHandlers() {
   // ---- Results
   $('results-again').addEventListener('click', () => net.send({ t: 'newWords' }));
   $('results-lobby').addEventListener('click', () => net.send({ t: 'backToLobby' }));
+  // Standbilder kommen direkt von Google. Klappt das nicht, soll da kein
+  // zerbrochenes Bild stehen - die Ansicht selbst laesst sich trotzdem oeffnen.
+  // error-Ereignisse steigen nicht auf, deshalb in der Capture-Phase lauschen.
+  $('results-details').addEventListener('error', (e) => {
+    if (e.target.tagName === 'IMG') e.target.classList.add('broken');
+  }, true);
+
   $('results-details').addEventListener('click', (e) => {
     const card = e.target.closest('[data-detail]');
     if (!card) return;

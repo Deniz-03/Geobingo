@@ -429,6 +429,12 @@ export function handleMessage(ws, raw) {
 
   if (msg.t === 'hello') return onHello(ws, msg);
 
+  // Lebenszeichen des Clients. Manche Tunnel und Handy-Netze lassen eine tote
+  // Verbindung offen aussehen - dieses Echo verraet dem Client, dass wirklich
+  // noch etwas ankommt. Muss vor der Raum-Pruefung stehen, sonst gaebe es
+  // gleich nach dem Verbinden eine Fehlermeldung.
+  if (msg.t === 'ping') return send(ws, { t: 'pong' });
+
   const room = ws.meta && getRoom(ws.meta.roomCode);
   const player = room && room.players.get(ws.meta.playerId);
   if (!room || !player) {

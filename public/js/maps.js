@@ -46,6 +46,24 @@ function randomPoint() {
   };
 }
 
+/**
+ * Google meldet einen abgelehnten Key nicht ueber die Promise, sondern nur
+ * ueber diesen globalen Rueckruf - die Karten bleiben sonst wortlos grau.
+ * Typisch, wenn der Key auf bestimmte Adressen beschraenkt ist und jemand
+ * ueber eine Tunnel-Adresse spielt.
+ */
+let authErrorHandler = null;
+export function onMapsAuthError(fn) {
+  authErrorHandler = fn;
+}
+window.gm_authFailure = () => {
+  authErrorHandler?.(
+    'Google Maps lehnt den API-Key für diese Adresse ab. Meist ist im Google-Konto '
+    + 'eine HTTP-Referrer-Beschränkung gesetzt, die die aktuelle Adresse nicht enthält '
+    + '(oder die Abrechnung/das Kontingent ist aus). Karten und Street View bleiben leer.',
+  );
+};
+
 /** Laedt die Maps JavaScript API genau einmal. */
 export function loadMaps(key) {
   apiKey = key;
@@ -237,14 +255,17 @@ function attachCountryHighlight(map) {
  * Karte zum Aussuchen des Startorts. Die blauen Linien zeigen, wo Street View existiert.
  * onPick bekommt die angeklickten Koordinaten.
  */
-export function createPickerMap(el, center, onPick) {
+export function createPickerMap(el, center, onPick, { coverage = true } = {}) {
   const map = new google.maps.Map(el, {
     ...MAP_BASE_OPTIONS,
     center: center || { lat: 30, lng: 5 },
     zoom: center ? 15 : 2,
   });
 
-  new google.maps.StreetViewCoverageLayer().setMap(map);
+  // Rein optisch: die Ebene wird nur von der Karte abgehaengt. Gesucht und
+  // gesprungen wird weiter genauso, egal ob die Linien zu sehen sind.
+  const coverageLayer = new google.maps.StreetViewCoverageLayer();
+  coverageLayer.setMap(coverage ? map : null);
 
   const marker = new google.maps.Marker({ map, position: center || null, visible: !!center });
   let highlight = null;
@@ -253,6 +274,10 @@ export function createPickerMap(el, center, onPick) {
 
   return {
     map,
+    /** Blaue Street-View-Linien ein- oder ausblenden. */
+    setCoverage(on) {
+      coverageLayer.setMap(on ? map : null);
+    },
     /** Setzt die Markierung auf die tatsaechlich gefundene Panorama-Position. */
     mark(lat, lng) {
       marker.setPosition({ lat, lng });

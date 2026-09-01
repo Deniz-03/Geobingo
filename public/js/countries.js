@@ -31,13 +31,33 @@ export function filterActive(filter) {
 
 // ---------------------------------------------------------------- Laden
 
+// Die Datei ist gut 1,4 MB. Ueber einen Tunnel kommt sie manchmal gar nicht
+// oder nur halb an - deshalb mit Zeitlimit und ein paar Anlaeufen laden.
+const LOAD_TIMEOUT_MS = 40000;
+const LOAD_TRIES = 3;
+
+async function fetchGeoJson() {
+  let lastError = null;
+  for (let attempt = 1; attempt <= LOAD_TRIES; attempt++) {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), LOAD_TIMEOUT_MS);
+    try {
+      const res = await fetch(DATA_URL, { signal: abort.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json(); // wirft auch, wenn die Antwort abgeschnitten ankam
+    } catch (err) {
+      lastError = abort.signal.aborted ? new Error('Zeitüberschreitung') : err;
+      if (attempt < LOAD_TRIES) await new Promise((r) => setTimeout(r, 800 * attempt));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError;
+}
+
 export function loadCountries() {
   if (loadPromise) return loadPromise;
-  loadPromise = fetch(DATA_URL)
-    .then((res) => {
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    })
+  loadPromise = fetchGeoJson()
     .then((geojson) => {
       index = buildIndex(geojson);
       return index;
