@@ -129,7 +129,13 @@ Host und stellt alles ein:
   einem kuratierten Pool ziehen. Der Pool enthält nur Dinge, die man in Street View realistisch
   finden kann, gemischt aus leichten, mittleren und schweren Begriffen. Maximal 40 Wörter.
 * **Spielzeit** – 1 bis 60 Minuten.
-* **Bedenkzeit pro Voting** – wie lange ihr pro Fund zum Abstimmen habt.
+* **Richtzeit pro Voting-Bild** – als Orientierung, wie lange ihr pro Fund überlegen solltet.
+  Sie beendet nichts: weitergeschaltet wird nur vom Host.
+* **Punkte** – wie am Rundenende gewertet wird:
+  * **✨ Automatisch** (Standard) – ab 3 Mitspielern Stadt-Land-Fluss, darunter klassisch.
+  * **🏅 Klassisch** – 100 Punkte pro anerkanntem Fund, +25 bei einstimmigem Ja.
+  * **🎯 Stadt-Land-Fluss** – 20 Punkte für ein Wort, das sonst niemand gefunden hat,
+    10 Punkte, wenn es mehrere haben.
 * **Startort** – drei Modi:
   * **🎲 Zufällig** – ihr werdet irgendwo auf der Welt abgesetzt.
   * **📍 Host wählt** – der Host sucht auf einer Weltkarte einen Ort aus, dort starten alle. Die
@@ -169,13 +175,21 @@ richte die Kamera darauf aus und drücke bei dem Wort auf **📸 Merken**. Gespe
 exakte Blickrichtung – die anderen sehen später genau dein Bild. Mit **↻ Ersetzen** überschreibst
 du einen Fund, mit **👁** schaust du ihn dir nochmal an, mit **✕** verwirfst du ihn.
 
-**Voting.** Nach Ablauf der Zeit geht es automatisch weiter: Jeder Fund wird nacheinander allen
-gezeigt, und alle außer dem Einreicher stimmen ab, ob er zählt. Ihr könnt euch im Panorama frei
-umschauen (aber nicht weglaufen), um zu prüfen ob es wirklich passt. Sobald alle abgestimmt haben,
-geht es weiter – oder wenn die Bedenkzeit abläuft.
+**Voting.** Jeder Fund wird nacheinander allen gezeigt, und alle außer dem Einreicher stimmen ab,
+ob er zählt. Zu sehen ist zuerst ein Standbild genau der eingereichten Blickrichtung – das ist
+sofort da und bei allen gleich. Über **🔄 Umsehen** klappst du es weg und kannst dich im Panorama
+frei umschauen (aber nicht weglaufen).
 
-**Ranking.** 100 Punkte pro anerkanntem Fund, plus 25 Bonuspunkte wenn er einstimmig durchgeht.
-Darunter siehst du alle Einreichungen mit Vorschaubild – anklicken öffnet die Ansicht groß.
+**Der Host steuert das Voting.** Weder die Richtzeit noch „alle haben abgestimmt“ schalten von
+allein weiter – beides ist nur ein Hinweis für den Host. Er blättert mit **◂ Zurück** und
+**Weiter ▸** durch die Einreichungen (dabei steht daneben, wie viele schon fertig abgestimmt sind)
+und beendet die Phase mit **🏁 Voting beenden & Runde auswerten**. Dadurch kann mitten im Voting
+jeder die Seite neu laden, ohne dass etwas übersprungen wird.
+
+**Ranking.** Gewertet wird nach dem eingestellten Punktesystem (siehe Lobby), und zwar erst am
+Ende: Erst wenn über alle Einreichungen abgestimmt ist, werden sie miteinander verglichen. Nur so
+lässt sich feststellen, welches Wort wirklich nur einer gefunden hat. Darunter siehst du alle
+Einreichungen mit Vorschaubild – anklicken öffnet die Ansicht groß.
 
 Danach entweder **Neue Wörter & nochmal** (gleiche Anzahl, frisch gezogen) oder zurück in die
 Lobby.
@@ -185,7 +199,11 @@ Lobby.
 * **Verbindung verloren?** Kein Problem. Einfach die Seite neu laden – du landest automatisch
   wieder im laufenden Spiel, mit deinen Funden, deinen Punkten und **an der Stelle, an der du
   gerade warst**. Solange der Server läuft, geht nichts verloren.
-* **Host geht raus?** Die Host-Rolle wandert automatisch zum nächsten Spieler.
+* **Host geht raus?** Die Host-Rolle wandert automatisch zum nächsten Spieler. Kommt der
+  Ersteller des Raums zurück (z.B. nach einem Neuladen), bekommt er sie wieder – sonst könnte
+  er das Voting nicht mehr beenden.
+* **Neuladen im Voting?** Gefahrlos. Die Phase bleibt stehen, bis der Host sie beendet, und
+  deine bereits abgegebenen Stimmen bleiben erhalten.
 * **Zu spät gekommen?** Man kann jederzeit beitreten, auch mitten in der Runde.
 * Stimmt bei einem Fund niemand rechtzeitig ab, zählt er als anerkannt.
 * Der Spielstand liegt nur im Arbeitsspeicher – wenn du den Server neu startest, sind Räume weg.
@@ -195,7 +213,8 @@ Lobby.
 | Problem | Ursache |
 |---|---|
 | Schwarzes Bild statt Street View, Konsole zeigt `InvalidKeyMapError` | Key falsch oder Maps JavaScript API nicht aktiviert |
-| Vorschaubilder im Ergebnis kaputt | Street View Static API nicht aktiviert |
+| Vorschaubilder kaputt oder Platzhalter | Street View Static API nicht aktiviert (die Bilder holt der Server, nicht der Browser) |
+| Panorama im Voting bleibt schwarz | Googles Kachel-Server ist langsam oder drosselt gerade. Das Standbild wird trotzdem angezeigt – zum Abstimmen reicht es. Bei „Nochmal versuchen“ wird neu geladen |
 | `RefererNotAllowedMapError` | Referrer-Einschränkung passt nicht zur Adresse, unter der ihr spielt |
 | „Kein Street-View-Ort gefunden“ | Google hat gerade keinen Treffer geliefert – nochmal versuchen |
 | „In den gewählten Ländern wurde kein Street-View-Ort gefunden“ | Das erlaubte Land hat kaum oder gar keine Street-View-Abdeckung – ein weiteres Land dazunehmen |
@@ -209,7 +228,8 @@ Lobby.
 
 ```
 server/
-  index.js    HTTP-Server, statische Dateien, WebSockets, API-Key-Verwaltung
+  index.js    HTTP-Server, statische Dateien, WebSockets, API-Key-Verwaltung,
+              Proxy für Street-View-Standbilder (/api/streetview)
   game.js     Räume, Phasen, Abstimmung, Punkte  (der ganze Spielzustand)
   words.js    kuratierter Wortpool für die Zufallsauswahl
 public/

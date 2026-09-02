@@ -404,6 +404,31 @@ kbd {
 .vote-btn.yes.active, .vote-btn.yes:hover:not(:disabled) { background: var(--good); border-color: var(--good); color: #06251a; font-weight: 600; }
 .vote-btn.no.active, .vote-btn.no:hover:not(:disabled) { background: var(--bad); border-color: var(--bad); color: #2a0808; font-weight: 600; }
 
+/* Das Standbild liegt ueber dem Panorama, bis dessen Kacheln da sind - damit
+   nie ein schwarzes Feld zu sehen ist. */
+.vote-still {
+  position: absolute; inset: 0; z-index: 3;
+  width: 100%; height: 100%; object-fit: cover; background: var(--bg);
+}
+.vote-failed {
+  position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: .8rem; text-align: center; padding: 1rem;
+  background: var(--bg); color: var(--muted);
+}
+/* Deckt das Standbild auf Wunsch auf - darunter wartet das begehbare Panorama. */
+.vote-look {
+  position: absolute; top: 1rem; right: 1rem; z-index: 5;
+  background: rgba(13, 17, 23, .85); color: var(--text); border: 1px solid var(--line);
+  border-radius: 10px; padding: .45rem .8rem; font-size: .9rem; font-family: inherit; cursor: pointer;
+}
+.vote-look:hover { border-color: var(--accent-2); }
+/* Die Zeit beendet nichts mehr - deshalb ruhig statt alarmierend. */
+.timer.over { color: var(--muted); font-size: 1.1rem; }
+
+.vote-host { display: flex; align-items: center; justify-content: center; gap: .6rem; flex-wrap: wrap; }
+.vote-host .btn.primary { margin-left: .4rem; }
+#vote-settled { min-width: 8ch; text-align: center; }
+
 /* ---------------------------------------------------------- Results */
 .results-wrap { max-width: 900px; margin: 0 auto; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
 
@@ -433,8 +458,12 @@ kbd {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   background: var(--bg); color: var(--muted); font-size: .8rem; text-align: center; padding: .4rem;
 }
+.detail.unique { border-color: var(--accent); }
 .detail .meta { padding: .5rem .6rem .6rem; }
 .detail .w { font-weight: 600; font-size: .92rem; overflow-wrap: anywhere; }
+.detail .w .tag { font-size: .72rem; font-weight: 500; margin-left: .3rem; white-space: nowrap; }
+.detail .w .tag.uniq { background: rgba(249, 115, 22, .2); color: var(--accent); }
+.detail .w .tag.shared { background: var(--bg); color: var(--muted); }
 .detail .p { color: var(--muted); font-size: .8rem; display: flex; justify-content: space-between; gap: .5rem; margin-top: .2rem; }
 .verdict.ok { color: var(--good); }
 .verdict.nope { color: var(--bad); }

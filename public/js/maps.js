@@ -5,7 +5,6 @@ import {
   countryGeoJson, filterActive, isAllowed, normalizeFilter, randomPointInCountries,
 } from './countries.js';
 
-let apiKey = '';
 let loadPromise = null;
 
 /** Regionen mit guter Street-View-Abdeckung. weight = wie oft gezogen wird. */
@@ -78,7 +77,6 @@ let mapsScript = null;
  * dem Zeitlimit doch noch fertig geworden ist.
  */
 export function loadMaps(key) {
-  apiKey = key;
   if (window.google?.maps?.StreetViewPanorama) return Promise.resolve(window.google.maps);
   if (loadPromise) return loadPromise;
 
@@ -468,6 +466,89 @@ function positionOf(view) {
   return { position: { lat: view.lat, lng: view.lng } };
 }
 
+/**
+ * Prueft, ob es zu einer gespeicherten Ansicht ueberhaupt noch Bilder gibt,
+ * und liefert eine Ansicht zurueck, die sicher etwas anzeigt.
+ *
+ * Hintergrund: Eine Einreichung reist nur als Panorama-ID plus Koordinaten
+ * durchs Netz. Ist die ID beim Betrachter nicht (mehr) aufloesbar - Google
+ * tauscht Aufnahmen aus, Nutzerfotos verschwinden -, dann bleibt das Panorama
+ * einfach schwarz stehen, ohne Fehler. Deshalb erst nachfragen, und zur Not
+ * ueber die Koordinaten das naechstgelegene Bild nehmen.
+ */
+export async function resolveView(view) {
+  if (!view) throw new Error('Zu dieser Einreichung wurde keine Ansicht gespeichert.');
+  const service = new google.maps.StreetViewService();
+  const pack = (data, base) => ({
+    pano: data.location.pano,
+    lat: data.location.latLng.lat(),
+    lng: data.location.latLng.lng(),
+    heading: base.heading ?? 0,
+    pitch: base.pitch ?? 0,
+    zoom: base.zoom ?? 0,
+  });
+
+  if (view.pano) {
+    try {
+      return pack(await getPanoramaAt(service, { pano: view.pano }), view);
+    } catch {
+      /* ID nicht mehr gueltig - gleich ueber die Koordinaten weiter */
+    }
+  }
+
+  if (Number.isFinite(view.lat) && Number.isFinite(view.lng)) {
+    for (const radius of [50, 250, 1000]) {
+      try {
+        return pack(await getPanoramaAt(service, { location: { lat: view.lat, lng: view.lng }, radius }), view);
+      } catch {
+        /* in diesem Radius nichts - weiter */
+      }
+    }
+  }
+
+  throw new Error('Für diese Stelle gibt es kein Street-View-Bild mehr.');
+}
+
+/**
+ * Stoesst das Neuvermessen an, bis der Container wirklich eine Groesse hat.
+ *
+ * Ein Panorama, das in einem versteckten oder noch nicht vermessenen Element
+ * entsteht, rendert in 0x0 und bleibt danach schwarz - ein einzelnes
+ * 'resize' direkt nach dem Erzeugen reicht dafuer oft nicht. Kein
+ * requestAnimationFrame: in einem Hintergrund-Tab feuert das nie.
+ */
+export function refreshPanorama(pano, el, { tries = 24, delay = 120 } = {}) {
+  if (!pano || !el) return;
+  let left = tries;
+  let hits = 0;
+  const tick = () => {
+    if (!el.isConnected) return;
+    if (el.clientWidth > 0 && el.clientHeight > 0) {
+      pano.setVisible(true);
+      google.maps.event.trigger(pano, 'resize');
+      hits++;
+    }
+    // Zweimal treffen: einmal sofort, einmal wenn das Layout wirklich steht.
+    if (hits >= 2 || --left <= 0) return;
+    setTimeout(tick, delay);
+  };
+  tick();
+}
+
+/**
+ * Haengt einen Groessen-Waechter an den Container. Damit vermisst sich das
+ * Panorama auch dann neu, wenn der Bildschirm erst spaeter sichtbar wird
+ * (Bildschirmwechsel, Drehen des Handys, aufklappende Leiste).
+ */
+export function watchPanoramaSize(pano, el) {
+  if (!pano || !el || typeof ResizeObserver !== 'function') return null;
+  const observer = new ResizeObserver(() => {
+    if (el.clientWidth > 0 && el.clientHeight > 0) google.maps.event.trigger(pano, 'resize');
+  });
+  observer.observe(el);
+  return observer;
+}
+
 /** Springt ein bestehendes Panorama an eine gespeicherte Ansicht. */
 export function applyView(pano, view) {
   if (!pano || !view) return;
@@ -492,19 +573,29 @@ export function readView(pano) {
   };
 }
 
-/** Standbild fuer Vorschau-Kacheln (Street View Static API). */
+/**
+ * Standbild fuer Vorschau-Kacheln.
+ *
+ * Geholt wird ueber den eigenen Server, nicht direkt bei Google: ein auf
+ * HTTP-Referrer beschraenkter Key lehnt die Bilder sonst ab, sobald jemand
+ * ueber eine andere Adresse (Tunnel, WLAN-IP) spielt - dann sah ein Teil der
+ * Runde nur leere Kacheln. Ueber den Server bekommen alle dasselbe Bild.
+ */
 export function thumbnailUrl(view, width = 400, height = 250) {
-  if (!view || !apiKey) return '';
+  if (!view) return '';
+  if (!view.pano && !Number.isFinite(view.lat)) return '';
   const fov = Math.max(10, Math.min(120, 180 / Math.pow(2, view.zoom || 0)));
   const params = new URLSearchParams({
-    size: `${width}x${height}`,
+    w: String(width),
+    h: String(height),
     heading: String(Math.round(view.heading || 0)),
     pitch: String(Math.round(view.pitch || 0)),
     fov: String(Math.round(fov)),
-    key: apiKey,
-    return_error_code: 'true',
   });
   if (view.pano) params.set('pano', view.pano);
-  else params.set('location', `${view.lat},${view.lng}`);
-  return `https://maps.googleapis.com/maps/api/streetview?${params}`;
+  else {
+    params.set('lat', String(view.lat));
+    params.set('lng', String(view.lng));
+  }
+  return `/api/streetview?${params}`;
 }
