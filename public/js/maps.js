@@ -46,28 +46,81 @@ function randomPoint() {
   };
 }
 
-/** Laedt die Maps JavaScript API genau einmal. */
+/**
+ * Google meldet einen abgelehnten Key nicht ueber die Promise, sondern nur
+ * ueber diesen globalen Rueckruf - die Karten bleiben sonst wortlos grau.
+ * Typisch, wenn der Key auf bestimmte Adressen beschraenkt ist und jemand
+ * ueber eine Tunnel-Adresse spielt.
+ */
+let authErrorHandler = null;
+export function onMapsAuthError(fn) {
+  authErrorHandler = fn;
+}
+window.gm_authFailure = () => {
+  authErrorHandler?.(
+    'Google Maps lehnt den API-Key für diese Adresse ab. Meist ist im Google-Konto '
+    + 'eine HTTP-Referrer-Beschränkung gesetzt, die die aktuelle Adresse nicht enthält '
+    + '(oder die Abrechnung/das Kontingent ist aus). Karten und Street View bleiben leer.',
+  );
+};
+
+// Auf einem langsamen Handy im Mobilfunknetz braucht die Maps-API auch mal
+// eine halbe Minute. Laeuft die Zeit ab, ist das kein endgueltiges Nein:
+// beim naechsten Versuch wird einfach weiter gewartet.
+const MAPS_TIMEOUT_MS = 30000;
+const MAPS_CALLBACK = '__geobingoMapsReady';
+let mapsScript = null;
+
+/**
+ * Laedt die Maps JavaScript API. Das Script wird nur einmal eingehaengt,
+ * ein fehlgeschlagener Versuch merkt sich aber nichts: sonst blieben Karten
+ * und Street View fuer den Rest der Sitzung tot, obwohl das Script kurz nach
+ * dem Zeitlimit doch noch fertig geworden ist.
+ */
 export function loadMaps(key) {
   apiKey = key;
+  if (window.google?.maps?.StreetViewPanorama) return Promise.resolve(window.google.maps);
   if (loadPromise) return loadPromise;
 
   loadPromise = new Promise((resolve, reject) => {
-    if (window.google?.maps?.StreetViewPanorama) return resolve(window.google.maps);
+    let poll = null;
+    const settle = (fn) => (value) => {
+      clearInterval(poll);
+      fn(value);
+    };
+    const done = settle(() => resolve(window.google.maps));
+    const fail = settle((err) => {
+      loadPromise = null; // naechster Aufruf darf es nochmal versuchen
+      reject(err);
+    });
 
-    const cbName = '__geobingoMapsReady';
-    window[cbName] = () => {
-      delete window[cbName];
-      resolve(window.google.maps);
+    window[MAPS_CALLBACK] = () => {
+      delete window[MAPS_CALLBACK];
+      done();
     };
 
-    const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&loading=async&callback=${cbName}`;
-    script.async = true;
-    script.onerror = () => reject(new Error('Google Maps konnte nicht geladen werden. Ist der API-Key korrekt?'));
-    document.head.appendChild(script);
+    if (!mapsScript) {
+      mapsScript = document.createElement('script');
+      mapsScript.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}`
+        + `&v=weekly&loading=async&callback=${MAPS_CALLBACK}`;
+      mapsScript.async = true;
+      mapsScript.onerror = () => {
+        mapsScript.remove();
+        mapsScript = null; // wirklich kaputt - beim naechsten Mal neu einhaengen
+        fail(new Error('Google Maps konnte nicht geladen werden. Ist der API-Key korrekt?'));
+      };
+      document.head.appendChild(mapsScript);
+    }
 
-    // Google meldet Key-Fehler nur ueber die Konsole - deshalb ein Timeout als Notbremse.
-    setTimeout(() => reject(new Error('Zeitueberschreitung beim Laden von Google Maps.')), 20000);
+    // Der Rueckruf kann verloren gehen (zweiter Versuch, abgebrochenes Laden).
+    // Deshalb zusaetzlich nachsehen, ob die API inzwischen einfach da ist.
+    const until = Date.now() + MAPS_TIMEOUT_MS;
+    poll = setInterval(() => {
+      if (window.google?.maps?.StreetViewPanorama) return done();
+      if (Date.now() > until) {
+        fail(new Error('Google Maps lädt ungewöhnlich lange. Gleich nochmal versuchen.'));
+      }
+    }, 400);
   });
 
   return loadPromise;
@@ -237,14 +290,17 @@ function attachCountryHighlight(map) {
  * Karte zum Aussuchen des Startorts. Die blauen Linien zeigen, wo Street View existiert.
  * onPick bekommt die angeklickten Koordinaten.
  */
-export function createPickerMap(el, center, onPick) {
+export function createPickerMap(el, center, onPick, { coverage = true } = {}) {
   const map = new google.maps.Map(el, {
     ...MAP_BASE_OPTIONS,
     center: center || { lat: 30, lng: 5 },
     zoom: center ? 15 : 2,
   });
 
-  new google.maps.StreetViewCoverageLayer().setMap(map);
+  // Rein optisch: die Ebene wird nur von der Karte abgehaengt. Gesucht und
+  // gesprungen wird weiter genauso, egal ob die Linien zu sehen sind.
+  const coverageLayer = new google.maps.StreetViewCoverageLayer();
+  coverageLayer.setMap(coverage ? map : null);
 
   const marker = new google.maps.Marker({ map, position: center || null, visible: !!center });
   let highlight = null;
@@ -253,6 +309,10 @@ export function createPickerMap(el, center, onPick) {
 
   return {
     map,
+    /** Blaue Street-View-Linien ein- oder ausblenden. */
+    setCoverage(on) {
+      coverageLayer.setMap(on ? map : null);
+    },
     /** Setzt die Markierung auf die tatsaechlich gefundene Panorama-Position. */
     mark(lat, lng) {
       marker.setPosition({ lat, lng });

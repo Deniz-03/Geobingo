@@ -165,7 +165,7 @@ input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
   background: var(--bg-3); border: 1px solid var(--line); border-radius: 999px;
   padding: .35rem .5rem .35rem .85rem; font-size: .9rem;
 }
-.words li .x { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1rem; line-height: 1; padding: 0 .2rem; }
+.words li .x { background: none; border: none; color: var(--bg-3); cursor: pointer; font-size: 1rem; line-height: 1; padding: 0 .2rem; }
 .words li .x:hover { color: var(--bad); }
 
 /* ---------------------------------------------------------- Startort-Auswahl */
@@ -246,6 +246,10 @@ input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
 }
 .picker-empty.hidden { display: none; }
 .picker-side .btn { margin-top: auto; }
+/* Der Linien-Schalter soll beim Hinweis bleiben und nicht wie der
+   Uebernehmen-Knopf ans untere Ende rutschen. */
+.picker-side .btn.coverage-toggle { margin-top: 0; align-self: flex-start; }
+.coverage-toggle.off { opacity: .75; text-decoration: line-through; }
 #picker-status.ok { color: var(--good); }
 #picker-status.bad { color: var(--bad); }
 
@@ -421,6 +425,14 @@ kbd {
 .detail.accepted { border-color: rgba(52, 211, 153, .5); }
 .detail.rejected { opacity: .65; }
 .detail .thumb { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; background: var(--bg); display: block; }
+/* Kommt das Standbild nicht von Google (Kontingent, Key-Beschraenkung,
+   wacklige Leitung), lieber eine ruhige Flaeche als ein kaputtes Bild. */
+.detail .thumb.broken { position: relative; border-bottom: 1px solid var(--line); }
+.detail .thumb.broken::after {
+  content: '🖼 Vorschau nicht geladen';
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: var(--bg); color: var(--muted); font-size: .8rem; text-align: center; padding: .4rem;
+}
 .detail .meta { padding: .5rem .6rem .6rem; }
 .detail .w { font-weight: 600; font-size: .92rem; overflow-wrap: anywhere; }
 .detail .p { color: var(--muted); font-size: .8rem; display: flex; justify-content: space-between; gap: .5rem; margin-top: .2rem; }

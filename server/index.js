@@ -66,6 +66,31 @@ const MIME = {
 const GZIP_MIN_BYTES = 4096;
 const GZIP_TYPES = new Set(['.html', '.js', '.css', '.json', '.svg', '.webmanifest']);
 
+// Bis zu dieser Groesse wird eine Datei gzip-t im Speicher behalten. Dadurch
+// wird die Laenderkarte genau einmal komprimiert statt bei jedem Abruf, und
+// die Antwort bekommt eine echte Content-Length. Das ist durch einen Tunnel
+// wichtig: gestueckelte Antworten ohne Laengenangabe brechen dort gern ab.
+const GZIP_CACHE_MAX_FILE = 8 * 1024 * 1024;
+const gzipCache = new Map(); // filePath -> { tag, buffer }
+
+// /data aendert sich nur, wenn die Karte neu gebaut wird - das darf der
+// Browser also laenger behalten. Alles andere wird jedes Mal nachgefragt
+// (mit ETag ist das eine winzige 304-Antwort).
+const LONG_CACHE = /^[/\\]data[/\\]/;
+
+function etagOf(stat) {
+  return `W/"${stat.size.toString(16)}-${Math.round(stat.mtimeMs).toString(16)}"`;
+}
+
+async function gzipped(filePath, tag) {
+  const hit = gzipCache.get(filePath);
+  if (hit && hit.tag === tag) return hit.buffer;
+  const raw = await fsp.readFile(filePath);
+  const buffer = zlib.gzipSync(raw);
+  gzipCache.set(filePath, { tag, buffer });
+  return buffer;
+}
+
 function sendJson(res, status, body) {
   const data = JSON.stringify(body);
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(data) });
@@ -77,7 +102,8 @@ async function serveStatic(req, res) {
   let pathname = decodeURIComponent(url.pathname);
   if (pathname === '/' || pathname === '') pathname = '/index.html';
 
-  const filePath = path.join(PUBLIC_DIR, path.normalize(pathname).replace(/^([/\\])+/, ''));
+  const rel = path.normalize(pathname).replace(/^([/\\])+/, '');
+  const filePath = path.join(PUBLIC_DIR, rel);
   if (!filePath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403).end('Forbidden');
     return;
@@ -88,20 +114,39 @@ async function serveStatic(req, res) {
     if (stat.isDirectory()) throw new Error('dir');
 
     const ext = path.extname(filePath).toLowerCase();
+    const tag = etagOf(stat);
     const headers = {
       'Content-Type': MIME[ext] || 'application/octet-stream',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': LONG_CACHE.test(path.sep + rel) ? 'public, max-age=86400' : 'no-cache',
+      ETag: tag,
+      'Last-Modified': stat.mtime.toUTCString(),
     };
+
+    // Der Browser hat die Datei schon - das spart durch den Tunnel die vollen
+    // 1,4 MB der Laenderkarte bei jedem Neuladen.
+    if (req.headers['if-none-match'] === tag) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+
     const gzip = GZIP_TYPES.has(ext)
       && stat.size >= GZIP_MIN_BYTES
       && /\bgzip\b/.test(req.headers['accept-encoding'] || '');
 
     if (gzip) {
-      // Ohne bekannte Endgroesse faellt Content-Length weg - das ist in Ordnung.
       headers['Content-Encoding'] = 'gzip';
       headers.Vary = 'Accept-Encoding';
-      res.writeHead(200, headers);
-      fs.createReadStream(filePath).pipe(zlib.createGzip()).pipe(res);
+      if (stat.size <= GZIP_CACHE_MAX_FILE) {
+        const buffer = await gzipped(filePath, tag);
+        headers['Content-Length'] = buffer.length;
+        res.writeHead(200, headers);
+        res.end(buffer);
+      } else {
+        // Zu gross zum Zwischenspeichern - dann eben ohne Laengenangabe.
+        res.writeHead(200, headers);
+        fs.createReadStream(filePath).pipe(zlib.createGzip()).pipe(res);
+      }
     } else {
       headers['Content-Length'] = stat.size;
       res.writeHead(200, headers);

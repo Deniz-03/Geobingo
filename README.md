@@ -202,6 +202,8 @@ Lobby.
 | Ort direkt an einer Grenze wird dem falschen Land zugeordnet | Die Landesgrenzen sind vereinfacht (siehe unten), auf ein paar hundert Meter genau |
 | Freunde im WLAN kommen nicht drauf | Windows-Firewall blockt Node.js |
 | Freunde über Tunnel kommen nicht drauf | Tunnel-Fenster geschlossen, Adresse gilt nur solange es läuft |
+| Karten oder Street View bleiben grau, obwohl der Raum funktioniert | Die Maps-API war beim Laden zu langsam. Wird inzwischen automatisch nachgeholt; hilft das nicht, Seite neu laden |
+| Nur bei Mitspielern über den Tunnel bleiben Karten leer | Prüfe im Google-Konto die **Anwendungseinschränkung** des Keys: „Keine" oder ein HTTP-Referrer, der die Tunnel-Adresse einschließt. Eine IP-Einschränkung sperrt alle außer dir aus |
 
 ## 9. Aufbau
 
