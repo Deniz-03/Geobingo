@@ -143,12 +143,28 @@ Host und stellt alles ein:
   Aus = ihr müsst euch die ganze Runde zu Fuß durch Street View bewegen (deutlich härter).
 * **Alle starten am gleichen Ort** – aus = jeder wird woanders abgesetzt. Nur im Zufallsmodus
   relevant.
+* **Länder** – optionaler Filter, standardmäßig aus (🌍 Ganze Welt = alles wie immer):
+  * **🚫 Gesperrt** – die gewählten Länder kommen nicht vor. Praktisch, wenn ihr euch in der
+    Heimat zu gut auskennt: Deutschland, Schweiz und Österreich raus, der Rest der Welt bleibt.
+  * **✅ Nur diese** – gespielt wird ausschließlich in den gewählten Ländern. So könnt ihr eine
+    Runde komplett in einem einzigen Land spielen.
+
+  Über **🗺 Länder auf der Karte wählen** öffnet sich eine Weltkarte: Land anklicken = aus- bzw.
+  abwählen. Daneben gibt es eine Suchliste (Enter wählt den ersten Treffer, ◎ zoomt auf das Land).
+  Zwischen den beiden Modi kannst du umschalten, ohne die Auswahl neu zusammenzuklicken.
+
+  Der Filter greift überall: beim Zufalls-Startort, beim Startort des Hosts, beim Reisen über die
+  Karte und beim Speichern eines Fundes. Auf allen Karten siehst du die betroffenen Länder farbig –
+  rot = gesperrt, grün = erlaubt. Ohne Auswahl bleibt der Filter wirkungslos, auch wenn ein Modus
+  eingestellt ist.
 
 In beiden Kartenansichten kannst du statt zu klicken auch **Koordinaten einfügen** (in Google Maps:
 Rechtsklick auf den Ort → Koordinaten anklicken zum Kopieren) – praktisch, wenn ihr eine bestimmte
 Stadt spielen wollt, statt auf der Weltkarte herumzuzoomen.
 
-**Runde.** Links steht die Wortliste, rechts Street View. Wenn du etwas Passendes siehst,
+**Runde.** Street View füllt das Fenster, die Wortliste schwebt als fast durchsichtige Leiste
+darüber – so siehst du das ganze Bild, auch ohne die Liste einzuklappen (☰ oben links). Auch die Karte im
+Spiel lässt die Liste stehen, damit du beim Aussuchen siehst, was noch fehlt. Wenn du etwas Passendes siehst,
 richte die Kamera darauf aus und drücke bei dem Wort auf **📸 Merken**. Gespeichert wird die
 exakte Blickrichtung – die anderen sehen später genau dein Bild. Mit **↻ Ersetzen** überschreibst
 du einen Fund, mit **👁** schaust du ihn dir nochmal an, mit **✕** verwirfst du ihn.
@@ -182,6 +198,8 @@ Lobby.
 | Vorschaubilder im Ergebnis kaputt | Street View Static API nicht aktiviert |
 | `RefererNotAllowedMapError` | Referrer-Einschränkung passt nicht zur Adresse, unter der ihr spielt |
 | „Kein Street-View-Ort gefunden“ | Google hat gerade keinen Treffer geliefert – nochmal versuchen |
+| „In den gewählten Ländern wurde kein Street-View-Ort gefunden“ | Das erlaubte Land hat kaum oder gar keine Street-View-Abdeckung – ein weiteres Land dazunehmen |
+| Ort direkt an einer Grenze wird dem falschen Land zugeordnet | Die Landesgrenzen sind vereinfacht (siehe unten), auf ein paar hundert Meter genau |
 | Freunde im WLAN kommen nicht drauf | Windows-Firewall blockt Node.js |
 | Freunde über Tunnel kommen nicht drauf | Tunnel-Fenster geschlossen, Adresse gilt nur solange es läuft |
 
@@ -193,9 +211,34 @@ server/
   game.js     Räume, Phasen, Abstimmung, Punkte  (der ganze Spielzustand)
   words.js    kuratierter Wortpool für die Zufallsauswahl
 public/
-  index.html  alle Screens
-  css/        Styling
-  js/app.js   Oberfläche und Ablauf
-  js/maps.js  Street View: laden, Zufallsorte, Panoramen, Vorschaubilder
-  js/net.js   WebSocket mit automatischem Reconnect
+  index.html        alle Screens
+  css/              Styling
+  js/app.js         Oberfläche und Ablauf
+  js/maps.js        Street View: laden, Zufallsorte, Panoramen, Vorschaubilder
+  js/countries.js   Länder-Filter: welches Land liegt an einer Koordinate
+  js/net.js         WebSocket mit automatischem Reconnect
+  data/             Landesgrenzen für den Länder-Filter
+tools/
+  build-countries.mjs   erzeugt public/data/countries.json neu
 ```
+
+### Die Landesgrenzen
+
+`public/data/countries.json` enthält 239 Länder und stammt aus
+[Natural Earth](https://www.naturalearthdata.com/) (1:50 m, Public Domain). Die Datei ist
+vereinfacht und auf drei Nachkommastellen gerundet – rund 1,4 MB, die der Server komprimiert
+ausliefert und der Browser erst lädt, wenn wirklich ein Filter eingestellt ist. Die Grenzen sind
+damit auf ein paar hundert Meter genau; direkt auf einer Grenze kann die Zuordnung danebenliegen.
+Orte, die knapp im Wasser landen (Häfen, Küstenstraßen, Brücken), werden dem nächsten Land
+innerhalb von ca. 5 km zugeschlagen.
+
+Neu bauen lässt sich die Datei mit der Originaldatei
+`ne_50m_admin_0_countries.geojson` aus dem
+[natural-earth-vector-Repo](https://github.com/nvkelso/natural-earth-vector):
+
+```
+node tools/build-countries.mjs pfad/zu/ne_50m_admin_0_countries.geojson
+```
+
+Geprüft wird der Filter im Browser – der Server merkt sich nur die Einstellung und verteilt sie an
+alle Mitspieler.

@@ -6,6 +6,7 @@ import { drawRandomWords, WORD_POOL } from './words.js';
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // ohne I/O/0/1
 const MAX_WORDS = 40;
 const MAX_PLAYERS = 16;
+const MAX_COUNTRIES = 250; // mehr Laender gibt der Datensatz nicht her
 const POINTS_ACCEPTED = 100;
 const POINTS_UNANIMOUS_BONUS = 25;
 const ROOM_TTL_MS = 6 * 60 * 60 * 1000; // leere Raeume nach 6h aufraeumen
@@ -44,6 +45,10 @@ function createRoom() {
       // 'freemap' = kein Startort, jeder sucht sich selbst einen aus
       startMode: 'random',
       pickedLocation: null,
+      // Optionaler Laender-Filter. 'off' = ganze Welt (Standard),
+      // 'block' = die Codes sind gesperrt, 'allow' = nur die Codes sind erlaubt.
+      // Geprueft wird im Browser - der Server merkt sich nur die Einstellung.
+      countryFilter: { mode: 'off', codes: [] },
     },
     round: null, // { startedAt, endsAt, startLocation, submissions: Map }
     voting: null, // { order, index, votes: Map<subId, Map<playerId, bool>>, deadline }
@@ -124,6 +129,7 @@ export function serializeState(room, playerId) {
       sameStart: room.config.sameStart,
       startMode: room.config.startMode,
       pickedLocation: room.config.pickedLocation,
+      countryFilter: room.config.countryFilter,
     },
     players: [...room.players.values()].map((p) => publicPlayer(room, p)),
     poolSize: WORD_POOL.length,
@@ -375,6 +381,22 @@ function makeWord(text) {
   return { id: nextId('w'), text: String(text).trim().slice(0, 60) };
 }
 
+/** Landescodes aus dem Datensatz: 'DE' oder - ohne ISO-Code - 'XKOS'. */
+function sanitizeCountryFilter(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const mode = ['off', 'block', 'allow'].includes(raw.mode) ? raw.mode : 'off';
+  const codes = [];
+  const seen = new Set();
+  for (const item of Array.isArray(raw.codes) ? raw.codes : []) {
+    const code = String(item || '').toUpperCase().trim();
+    if (!/^[A-Z]{2,5}$/.test(code) || seen.has(code)) continue;
+    seen.add(code);
+    codes.push(code);
+    if (codes.length >= MAX_COUNTRIES) break;
+  }
+  return { mode, codes };
+}
+
 function sanitizeView(view) {
   if (!view || typeof view !== 'object') return null;
   const num = (v, min, max, fallback = 0) => {
@@ -481,6 +503,10 @@ export function handleMessage(ws, raw) {
       if (c.sameStart != null) room.config.sameStart = !!c.sameStart;
       if (c.startMode != null) {
         room.config.startMode = ['pick', 'freemap'].includes(c.startMode) ? c.startMode : 'random';
+      }
+      if (c.countryFilter != null) {
+        const filter = sanitizeCountryFilter(c.countryFilter);
+        if (filter) room.config.countryFilter = filter;
       }
       broadcast(room);
       return;

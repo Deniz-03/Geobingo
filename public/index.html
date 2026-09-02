@@ -124,6 +124,20 @@
             <button id="pick-open" class="btn full host-only">Karte öffnen</button>
           </div>
 
+          <div class="field">
+            <span>Länder</span>
+            <div class="segmented">
+              <button id="cf-off" class="seg active">🌍 Ganze Welt</button>
+              <button id="cf-block" class="seg">🚫 Gesperrt</button>
+              <button id="cf-allow" class="seg">✅ Nur diese</button>
+            </div>
+          </div>
+          <div id="cf-row" class="pick-box hidden">
+            <div id="cf-hint" class="muted small"></div>
+            <div id="cf-chips" class="chips"></div>
+            <button id="cf-open" class="btn full host-only">🗺 Länder auf der Karte wählen</button>
+          </div>
+
           <label class="field">
             <span>Spielzeit: <b id="dur-label">10:00</b></span>
             <input id="cfg-duration" type="range" min="1" max="60" step="1" value="10">
@@ -236,6 +250,7 @@
         <span id="gamemap-hint" class="muted small">
           Klick auf eine <b style="color:#4b8bf5">blaue Straße</b> – du landest sofort dort.
         </span>
+        <span id="gamemap-filter" class="muted small hidden"></span>
       </div>
       <div class="row">
         <div id="gamemap-timer" class="timer small">--:--</div>
@@ -249,6 +264,38 @@
         <button id="gamemap-go" class="btn">Los</button>
         <span id="gamemap-status" class="small"></span>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================ LAENDER-AUSWAHL -->
+<div id="countrymodal" class="modal hidden">
+  <div class="modal-inner wide">
+    <header class="modal-head">
+      <div>
+        <h3 id="cm-title">Länder sperren</h3>
+        <span id="cm-sub" class="muted small">Klick die Länder an, die nicht vorkommen sollen.</span>
+      </div>
+      <button id="cm-close" class="btn tiny">Fertig ✓</button>
+    </header>
+    <div class="picker">
+      <div id="cm-map" class="picker-map"></div>
+      <aside class="country-side">
+        <div class="segmented">
+          <button id="cm-mode-block" class="seg">🚫 Diese sperren</button>
+          <button id="cm-mode-allow" class="seg">✅ Nur diese</button>
+        </div>
+        <input id="cm-search" type="text" placeholder="Land suchen…" autocomplete="off" spellcheck="false">
+        <ul id="cm-results" class="country-list"></ul>
+        <div class="country-selected">
+          <div class="row between">
+            <span class="muted small">Ausgewählt: <b id="cm-count">0</b></span>
+            <button id="cm-clear" class="btn tiny ghost">Alle entfernen</button>
+          </div>
+          <div id="cm-chips" class="chips"></div>
+        </div>
+        <p id="cm-status" class="muted small">Länder werden geladen…</p>
+      </aside>
     </div>
   </div>
 </div>
@@ -277,6 +324,7 @@
           </div>
           <span class="muted small">In Google Maps: Rechtsklick auf den Ort → Koordinaten anklicken zum Kopieren.</span>
         </div>
+        <p id="picker-filter" class="muted small hidden"></p>
         <p id="picker-status" class="small"></p>
         <button id="picker-confirm" class="btn primary full" disabled>Diesen Ort übernehmen</button>
       </aside>
