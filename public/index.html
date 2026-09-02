@@ -138,13 +138,26 @@
             <button id="cf-open" class="btn full host-only">🗺 Länder auf der Karte wählen</button>
           </div>
 
+          <div class="field">
+            <span>Punkte</span>
+            <div class="segmented">
+              <button id="sm-auto" class="seg active">✨ Automatisch</button>
+              <button id="sm-classic" class="seg">🏅 Klassisch</button>
+              <button id="sm-unique" class="seg">🎯 Stadt-Land-Fluss</button>
+            </div>
+          </div>
+          <div id="sm-row" class="pick-box">
+            <div id="sm-hint" class="muted small"></div>
+          </div>
+
           <label class="field">
             <span>Spielzeit: <b id="dur-label">10:00</b></span>
             <input id="cfg-duration" type="range" min="1" max="60" step="1" value="10">
           </label>
           <label class="field">
-            <span>Bedenkzeit pro Voting: <b id="vote-label">30s</b></span>
+            <span>Richtzeit pro Voting-Bild: <b id="vote-label">30s</b></span>
             <input id="cfg-voting" type="range" min="5" max="120" step="5" value="30">
+            <span class="muted small">Nur als Orientierung – weiter geht es, wenn der Host klickt.</span>
           </label>
           <label class="check">
             <input id="cfg-maptravel" type="checkbox" checked>
@@ -205,6 +218,15 @@
     </header>
     <div class="vote-stage">
       <div id="pano-vote" class="pano"></div>
+      <!-- Standbild als Unterlage: es ist sofort da und bleibt stehen, falls das
+           Panorama nicht hochkommt. Ohne das sah man hier ein schwarzes Feld. -->
+      <img id="vote-still" class="vote-still hidden" alt="" referrerpolicy="no-referrer">
+      <div id="vote-loading" class="pano-loading hidden"><div class="spinner"></div><span>Bild wird geladen…</span></div>
+      <div id="vote-failed" class="vote-failed hidden">
+        🖼 Dieses Bild lässt sich gerade nicht laden.
+        <button id="vote-retry" class="btn tiny">Nochmal versuchen</button>
+      </div>
+      <button id="vote-look" class="vote-look hidden">🔄 Umsehen</button>
       <div id="vote-badge" class="vote-badge">Eingereicht von <b>—</b></div>
     </div>
     <footer class="vote-foot">
@@ -214,7 +236,13 @@
       </div>
       <div id="vote-own" class="muted center-text hidden">Deine eigene Einreichung – die anderen stimmen ab.</div>
       <div id="vote-status" class="muted small center-text"></div>
-      <button id="vote-skip" class="btn tiny ghost host-only">Überspringen ▸</button>
+      <div class="vote-host host-only">
+        <button id="vote-prev" class="btn tiny ghost">◂ Zurück</button>
+        <span id="vote-settled" class="muted small"></span>
+        <button id="vote-next" class="btn tiny ghost">Weiter ▸</button>
+        <button id="vote-finish" class="btn primary">🏁 Voting beenden &amp; Runde auswerten</button>
+      </div>
+      <p id="vote-hostwait" class="muted small center-text">Der Host beendet das Voting, wenn alle durch sind.</p>
     </footer>
   </div>
 </section>
@@ -225,6 +253,7 @@
     <h1 class="logo small">🏆 Endstand</h1>
 
     <div class="card">
+      <p id="results-mode" class="muted small"></p>
       <ol id="results-ranking" class="ranking"></ol>
     </div>
 

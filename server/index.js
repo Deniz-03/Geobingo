@@ -47,6 +47,113 @@ function isLocalRequest(req) {
   return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
 }
 
+// ---------------------------------------------------------------- Street-View-Standbilder
+//
+// Die Standbilder werden ueber den Server geholt statt direkt im <img>-Tag.
+// Gruende:
+//  - Ein auf HTTP-Referrer beschraenkter Key lehnt Bilder ab, sobald jemand
+//    ueber eine Tunnel-Adresse spielt. Dann sah genau ein Spieler ein schwarzes
+//    bzw. leeres Feld und die anderen nicht.
+//  - Der Key steht nicht mehr in jeder Bild-URL.
+//  - Jedes Bild wird nur einmal bei Google geholt und dann aus dem Speicher
+//    bedient - alle Clients bekommen damit garantiert dasselbe Bild.
+
+const STREETVIEW_ENDPOINT = 'https://maps.googleapis.com/maps/api/streetview';
+const IMAGE_CACHE_MAX = 300;
+const IMAGE_CACHE_TTL_MS = 60 * 60 * 1000;
+const imageCache = new Map(); // key -> { at, type, buffer }
+
+function cacheImage(key, entry) {
+  imageCache.set(key, entry);
+  // Aeltester Eintrag zuerst raus - Map behaelt die Einfuegereihenfolge.
+  while (imageCache.size > IMAGE_CACHE_MAX) {
+    imageCache.delete(imageCache.keys().next().value);
+  }
+}
+
+function clampNum(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+/** Baut aus den Query-Parametern eine saubere Anfrage an die Street View Static API. */
+function streetviewParams(url, apiKey) {
+  const pano = (url.searchParams.get('pano') || '').slice(0, 200);
+  // Achtung: Number(null) waere 0 - eine fehlende Koordinate wuerde sonst als
+  // gueltiger Nullpunkt im Atlantik durchgehen.
+  const asCoord = (name, limit) => {
+    const raw = url.searchParams.get(name);
+    if (raw === null || raw.trim() === '') return NaN;
+    const n = Number(raw);
+    return Number.isFinite(n) && Math.abs(n) <= limit ? n : NaN;
+  };
+  const lat = asCoord('lat', 90);
+  const lng = asCoord('lng', 180);
+  if (!pano && (!Number.isFinite(lat) || !Number.isFinite(lng))) return null;
+
+  const params = new URLSearchParams({
+    size: `${Math.round(clampNum(url.searchParams.get('w'), 80, 640, 400))}x`
+      + `${Math.round(clampNum(url.searchParams.get('h'), 80, 640, 250))}`,
+    heading: String(Math.round(clampNum(url.searchParams.get('heading'), -360, 720, 0))),
+    pitch: String(Math.round(clampNum(url.searchParams.get('pitch'), -90, 90, 0))),
+    fov: String(Math.round(clampNum(url.searchParams.get('fov'), 10, 120, 90))),
+    return_error_code: 'true',
+    key: apiKey,
+  });
+  if (pano) params.set('pano', pano);
+  else params.set('location', `${lat},${lng}`);
+  return params;
+}
+
+async function serveStreetview(req, res, url) {
+  const cfg = await readConfig();
+  if (!cfg.apiKey) return sendJson(res, 503, { error: 'Kein API-Key hinterlegt.' });
+
+  const params = streetviewParams(url, cfg.apiKey);
+  if (!params) return sendJson(res, 400, { error: 'Ort fehlt.' });
+
+  // Der Key gehoert nicht in den Cache-Schluessel - sonst waere jeder Wechsel
+  // ein kompletter Neuaufbau.
+  const key = String(params).replace(/&?key=[^&]*/, '');
+  const hit = imageCache.get(key);
+  if (hit && Date.now() - hit.at < IMAGE_CACHE_TTL_MS) {
+    res.writeHead(200, {
+      'Content-Type': hit.type,
+      'Content-Length': hit.buffer.length,
+      'Cache-Control': 'public, max-age=3600',
+    });
+    return res.end(hit.buffer);
+  }
+
+  try {
+    const upstream = await fetch(`${STREETVIEW_ENDPOINT}?${params}`, {
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!upstream.ok) {
+      // 404 heisst hier meist "an dieser Stelle gibt es kein Bild" - das ist
+      // kein Serverfehler, der Client zeigt dann seinen Platzhalter.
+      return sendJson(res, upstream.status === 404 ? 404 : 502, {
+        error: `Street View antwortet mit ${upstream.status}.`,
+      });
+    }
+    const type = upstream.headers.get('content-type') || 'image/jpeg';
+    const buffer = Buffer.from(await upstream.arrayBuffer());
+    if (!type.startsWith('image/') || !buffer.length) {
+      return sendJson(res, 502, { error: 'Street View lieferte kein Bild.' });
+    }
+    cacheImage(key, { at: Date.now(), type, buffer });
+    res.writeHead(200, {
+      'Content-Type': type,
+      'Content-Length': buffer.length,
+      'Cache-Control': 'public, max-age=3600',
+    });
+    res.end(buffer);
+  } catch (err) {
+    sendJson(res, 504, { error: `Street View nicht erreichbar: ${err.message}` });
+  }
+}
+
 // ---------------------------------------------------------------- Static files
 
 const MIME = {
@@ -172,6 +279,10 @@ const server = http.createServer(async (req, res) => {
         canEdit: isLocalRequest(req),
         ...roomStats(),
       });
+    }
+
+    if (url.pathname === '/api/streetview' && req.method === 'GET') {
+      return serveStreetview(req, res, url);
     }
 
     if (url.pathname === '/api/config' && req.method === 'POST') {

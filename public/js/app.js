@@ -2,6 +2,7 @@ import * as net from './net.js';
 import {
   loadMaps, onMapsAuthError, findRandomLocation, findPanoramaNear, createGamePanorama,
   createViewPanorama, createPickerMap, createCountryMap, applyView, readView, thumbnailUrl,
+  resolveView, refreshPanorama, watchPanoramaSize,
 } from './maps.js';
 import {
   loadCountries, countriesReady, allCountries, namesFor,
@@ -79,13 +80,11 @@ function showScreen(name) {
   if (activeScreen === name) return;
   activeScreen = name;
   SCREENS.forEach((s) => $(`screen-${s}`).classList.toggle('hidden', s !== name));
-  // Panoramen brauchen sichtbare Container, sonst rendern sie in 0x0.
-  // setTimeout statt requestAnimationFrame: liegt der Tab im Hintergrund
-  // (Handy gesperrt, anderer Tab), feuert rAF nie - das Panorama bliebe grau.
-  setTimeout(() => {
-    if (name === 'game' && gamePano) google.maps.event.trigger(gamePano, 'resize');
-    if (name === 'vote' && votePano) google.maps.event.trigger(votePano, 'resize');
-  }, 0);
+  // Panoramen brauchen sichtbare Container, sonst rendern sie in 0x0 und
+  // bleiben danach schwarz. refreshPanorama misst so lange nach, bis der
+  // Container wirklich Platz hat - ein einzelnes 'resize' reicht dafuer nicht.
+  if (name === 'game') refreshPanorama(gamePano, $('pano-game'));
+  if (name === 'vote') refreshPanorama(votePano, $('pano-vote'));
 }
 
 // ---------------------------------------------------------------- Start
@@ -297,6 +296,7 @@ function renderLobby() {
   $('rand-count').max = 40;
 
   renderCountryFilter();
+  renderScoreMode();
 
   $('lobby-waiting').classList.toggle('hidden', state.isHost);
   $('lobby-start').disabled = !words.length || startingGame;
@@ -304,6 +304,36 @@ function renderLobby() {
   $('lobby-status').textContent = words.length
     ? `${words.length} Wörter · ${fmtTime(state.config.durationSec * 1000)} Spielzeit`
     : '';
+}
+
+// ---- Punktesystem ---------------------------------------------------------
+
+/** Was die drei Schalter bedeuten - in einem Satz unter der Auswahl. */
+function scoreModeHint(mode, effective, minPlayers, playerCount) {
+  if (mode === 'classic') {
+    return 'Jede anerkannte Einreichung bringt 100 Punkte, bei einstimmigem Ja 125.';
+  }
+  if (mode === 'unique') {
+    return 'Wie Stadt-Land-Fluss: 20 Punkte für ein Wort, das sonst niemand gefunden hat, '
+      + '10 Punkte, wenn es mehrere haben. Gezählt wird erst am Rundenende.';
+  }
+  return `Ab ${minPlayers} Mitspielern zählt Stadt-Land-Fluss (20 Punkte einzigartig / 10 geteilt), `
+    + `darunter die klassische Wertung. Aktuell: ${effective === 'unique' ? 'Stadt-Land-Fluss' : 'klassisch'} `
+    + `(${playerCount} ${playerCount === 1 ? 'Spieler' : 'Spieler'}).`;
+}
+
+function renderScoreMode() {
+  const mode = state.config.scoreMode || 'auto';
+  for (const [id, value] of [['sm-auto', 'auto'], ['sm-classic', 'classic'], ['sm-unique', 'unique']]) {
+    $(id).classList.toggle('active', mode === value);
+    $(id).disabled = !state.isHost;
+  }
+  $('sm-hint').textContent = scoreModeHint(
+    mode,
+    state.effectiveScoreMode || 'classic',
+    state.uniqueMinPlayers || 3,
+    state.players.filter((p) => p.connected).length,
+  );
 }
 
 function syncRange(id, value) {
@@ -603,10 +633,11 @@ function showPickerPreview(view) {
   $('picker-empty').classList.add('hidden');
   if (!pickerPano) {
     pickerPano = createViewPanorama($('picker-pano'), view);
+    watchPanoramaSize(pickerPano, $('picker-pano'));
   } else {
     applyView(pickerPano, view);
   }
-  setTimeout(() => google.maps.event.trigger(pickerPano, 'resize'), 0);
+  refreshPanorama(pickerPano, $('picker-pano'));
 }
 
 function setPickerStatus(text, kind) {
@@ -706,10 +737,11 @@ function placePlayer(view) {
     gamePano = createGamePanorama($('pano-game'), view);
     gamePano.addListener('position_changed', schedulePositionSave);
     gamePano.addListener('pov_changed', schedulePositionSave);
+    watchPanoramaSize(gamePano, $('pano-game'));
   } else {
     applyView(gamePano, view);
   }
-  google.maps.event.trigger(gamePano, 'resize');
+  refreshPanorama(gamePano, $('pano-game'));
   savePosition(view);
 }
 
@@ -833,21 +865,12 @@ function renderVoting() {
   $('vote-badge').innerHTML = item ? `Eingereicht von <b>${esc(item.playerName)}</b>` : '';
 
   if (item && item.id !== lastVoteItemId) {
-    if (mapsReady) {
-      lastVoteItemId = item.id;
-      const el = $('pano-vote');
-      if (!votePano) votePano = createViewPanorama(el, item.view);
-      else applyView(votePano, item.view);
-      // Kein rAF: im Hintergrund-Tab wuerde es nie feuern und das Panorama
-      // haette fuer immer die Groesse 0 - genau dann bleibt der Ausschnitt leer.
-      setTimeout(() => google.maps.event.trigger(votePano, 'resize'), 0);
-    } else {
-      // Ohne Maps-API gaebe es hier einen Absturz mitten im Rendern - dann
-      // haengt der ganze Voting-Screen. Lieber nachladen und neu zeichnen.
-      ensureMaps().then((ok) => {
-        if (ok && state?.phase === 'voting') renderVoting();
-      });
-    }
+    lastVoteItemId = item.id;
+    showVoteImage(item);
+  } else if (item) {
+    // Auch ohne Wechsel nachmessen: der Bildschirm kann inzwischen erst
+    // sichtbar geworden sein (Reload, Tab-Wechsel, gedrehtes Handy).
+    refreshPanorama(votePano, $('pano-vote'), { tries: 4 });
   }
 
   $('vote-actions').classList.toggle('hidden', !v.canVote);
@@ -855,9 +878,129 @@ function renderVoting() {
   $('vote-yes').classList.toggle('active', v.myVote === true);
   $('vote-no').classList.toggle('active', v.myVote === false);
 
+  // Kein Auto-Weiter mehr: "alle haben abgestimmt" ist nur noch ein Hinweis.
   $('vote-status').textContent = v.waitingFor.length
     ? `Warte auf: ${v.waitingFor.join(', ')}`
-    : 'Alle haben abgestimmt…';
+    : (v.allVoted ? '✓ Alle haben abgestimmt – der Host kann weiterklicken.' : '');
+
+  $('vote-prev').disabled = !v.canPrev;
+  $('vote-next').disabled = !v.canNext;
+  $('vote-settled').textContent = `${v.settled} von ${v.total} durch`;
+  $('vote-finish').textContent = v.settled >= v.total
+    ? '🏁 Voting beenden & Runde auswerten'
+    : `🏁 Voting beenden (${v.total - v.settled} offen)`;
+  $('vote-hostwait').classList.toggle('hidden', state.isHost);
+}
+
+// ---- Voting-Bild ----------------------------------------------------------
+//
+// Die Einreichung reist nur als Panorama-ID plus Koordinaten - das Bild baut
+// sich jeder Client selbst. Genau da entstand das schwarze Feld: das Panorama
+// war schon da, seine Kacheln aber noch nicht (langsame Leitung, Handy), oder
+// die Panorama-ID liess sich gar nicht mehr aufloesen.
+//
+// Deshalb zwei Ebenen:
+//   1. Standbild vom eigenen Server - eine einzelne JPEG-Datei, in
+//      Millisekunden da und bei allen Clients garantiert dieselbe. Das ist
+//      jetzt das, worueber abgestimmt wird, und es bleibt liegen.
+//   2. Das begehbare Panorama darunter. Es wird sofort vorbereitet, aber erst
+//      auf Knopfdruck aufgedeckt - dann sind seine Kacheln laengst da.
+//
+// Ein Zeitfenster zum Ausblenden gibt es bewusst nicht mehr: wie lange Google
+// fuer die Kacheln braucht, weiss man vorher nicht.
+
+let voteImageToken = 0;
+let votePanoReady = false;
+
+function setVoteImageState({ loading = false, failed = false } = {}) {
+  $('vote-loading').classList.toggle('hidden', !loading);
+  $('vote-failed').classList.toggle('hidden', !failed);
+}
+
+function stillVisible() {
+  return !$('vote-still').classList.contains('hidden');
+}
+
+/** Der Knopf lohnt nur, solange das Standbild oben liegt und es ein Panorama gibt. */
+function updateLookButton() {
+  $('vote-look').classList.toggle('hidden', !(votePanoReady && stillVisible()));
+}
+
+/** Standbild vorladen und erst anzeigen, wenn es wirklich fertig ist. */
+function showVoteStill(item, token) {
+  const img = $('vote-still');
+  const url = thumbnailUrl(item.view, 640, 400);
+  if (!url) return;
+
+  const probe = new Image();
+  probe.onload = () => {
+    if (token !== voteImageToken) return; // laengst ein anderes Bild dran
+    img.src = url;
+    img.classList.remove('hidden');
+    setVoteImageState({ loading: false });
+    updateLookButton();
+  };
+  // Kein Standbild? Dann uebernimmt das Panorama - Meldung kommt von dort.
+  probe.onerror = () => {
+    if (token !== voteImageToken) return;
+    img.classList.add('hidden');
+    updateLookButton();
+  };
+  probe.src = url;
+}
+
+async function showVoteImage(item) {
+  const token = ++voteImageToken;
+  const el = $('pano-vote');
+  votePanoReady = false;
+  $('vote-still').classList.add('hidden');
+  $('vote-still').removeAttribute('src');
+  $('vote-look').classList.add('hidden');
+  setVoteImageState({ loading: true });
+  // Das alte Panorama zeigt noch die vorige Einreichung - sofort wegnehmen,
+  // sonst stimmt jemand ueber das falsche Bild ab.
+  votePano?.setVisible(false);
+
+  showVoteStill(item, token);
+
+  if (!(await ensureMaps({ quiet: true }))) {
+    if (token !== voteImageToken) return;
+    // Ohne Maps-API bleibt das Standbild stehen - abstimmen geht trotzdem.
+    setVoteImageState({ loading: false, failed: !stillVisible() });
+    return;
+  }
+
+  try {
+    // Erst nachfragen, ob es die Aufnahme ueberhaupt noch gibt. Eine tote
+    // Panorama-ID bliebe sonst wortlos schwarz.
+    const view = await resolveView(item.view);
+    if (token !== voteImageToken) return;
+
+    if (!votePano) {
+      votePano = createViewPanorama(el, view);
+      watchPanoramaSize(votePano, el);
+    } else {
+      applyView(votePano, view);
+    }
+    refreshPanorama(votePano, el);
+    votePanoReady = true;
+    updateLookButton();
+    // Ohne Standbild ist das Panorama die einzige Ebene - dann sofort zeigen.
+    if (!stillVisible()) setVoteImageState({ loading: false });
+  } catch (err) {
+    if (token !== voteImageToken) return;
+    // Standbild da? Dann reicht das zum Abstimmen, sonst klare Ansage.
+    setVoteImageState({ loading: false, failed: !stillVisible() });
+    if (!stillVisible()) toast(err.message, 'warn');
+  }
+}
+
+/** Standbild wegklappen und im Panorama umsehen. */
+function lookAroundInVote() {
+  $('vote-still').classList.add('hidden');
+  $('vote-look').classList.add('hidden');
+  setVoteImageState({ loading: false });
+  refreshPanorama(votePano, $('pano-vote'));
 }
 
 // ---- Results -------------------------------------------------------------
@@ -865,6 +1008,13 @@ function renderVoting() {
 function renderResults() {
   showScreen('results');
   const r = state.results;
+  const slf = r.scoreMode === 'unique';
+
+  $('results-mode').textContent = slf
+    ? `🎯 Stadt-Land-Fluss: ${r.points.unique} Punkte für ein Wort, das sonst niemand hatte, `
+      + `${r.points.shared} Punkte für ein geteiltes.`
+    : `🏅 Klassisch: ${r.points.accepted} Punkte pro anerkannter Einreichung, `
+      + `+${r.points.unanimous} bei einstimmigem Ja.`;
 
   $('results-ranking').innerHTML = r.ranking.map((p) => `
     <li class="${p.rank === 1 && p.points > 0 ? 'top' : ''}">
@@ -872,17 +1022,23 @@ function renderResults() {
       <span class="dot" style="background:${esc(p.color)}"></span>
       <span class="rank-name">
         ${esc(p.name)}
-        <span class="rank-sub">${p.accepted} von ${p.submitted} anerkannt</span>
+        <span class="rank-sub">
+          ${p.accepted} von ${p.submitted} anerkannt${slf && p.uniques ? ` · ${p.uniques}× einzigartig ✨` : ''}
+        </span>
       </span>
       <span class="rank-points">${p.points}</span>
     </li>`).join('');
 
   $('results-details').innerHTML = r.details.length
     ? r.details.map((d, i) => `
-        <div class="detail ${d.accepted ? 'accepted' : 'rejected'}" data-detail="${i}">
+        <div class="detail ${d.accepted ? 'accepted' : 'rejected'} ${slf && d.unique ? 'unique' : ''}" data-detail="${i}">
           <img class="thumb" loading="lazy" alt="${esc(d.word)}" src="${esc(thumbnailUrl(d.view))}">
           <div class="meta">
-            <div class="w">${esc(d.word)}</div>
+            <div class="w">
+              ${esc(d.word)}
+              ${slf && d.accepted ? `<span class="tag ${d.unique ? 'uniq' : 'shared'}">${
+                d.unique ? '✨ nur du' : `${d.finders}× gefunden`}</span>` : ''}
+            </div>
             <div class="p">
               <span>${esc(d.playerName)}</span>
               <span class="verdict ${d.accepted ? 'ok' : 'nope'}">
@@ -913,7 +1069,11 @@ setInterval(() => {
   }
 
   if (state.phase === 'voting') {
-    $('vote-timer').textContent = fmtTime(Math.max(0, voteDeadline - Date.now()));
+    const left = voteDeadline - Date.now();
+    const el = $('vote-timer');
+    // Die Zeit beendet nichts mehr - abgelaufen heisst nur "Richtzeit rum".
+    el.textContent = left > 0 ? fmtTime(left) : 'Zeit rum';
+    el.classList.toggle('over', left <= 0);
   }
 }, 250);
 
@@ -1024,6 +1184,10 @@ function wireStaticHandlers() {
   $('cfg-samestart').addEventListener('change', (e) => {
     net.send({ t: 'setConfig', config: { sameStart: e.target.checked } });
   });
+
+  for (const [id, scoreMode] of [['sm-auto', 'auto'], ['sm-classic', 'classic'], ['sm-unique', 'unique']]) {
+    $(id).addEventListener('click', () => net.send({ t: 'setConfig', config: { scoreMode } }));
+  }
 
   $('mode-random').addEventListener('click', () => net.send({ t: 'setConfig', config: { startMode: 'random' } }));
   $('mode-pick').addEventListener('click', () => {
@@ -1182,16 +1346,35 @@ function wireStaticHandlers() {
   // ---- Voting
   $('vote-yes').addEventListener('click', () => net.send({ t: 'vote', value: true }));
   $('vote-no').addEventListener('click', () => net.send({ t: 'vote', value: false }));
-  $('vote-skip').addEventListener('click', () => net.send({ t: 'skipVote' }));
+  $('vote-prev').addEventListener('click', () => net.send({ t: 'voteNav', dir: 'prev' }));
+  $('vote-next').addEventListener('click', () => net.send({ t: 'voteNav', dir: 'next' }));
+  $('vote-finish').addEventListener('click', () => {
+    const open = state?.voting ? state.voting.total - state.voting.settled : 0;
+    const question = open > 0
+      ? `${open} Einreichung(en) sind noch nicht fertig abgestimmt.\nVoting trotzdem beenden und auswerten?`
+      : 'Voting beenden und die Runde auswerten?';
+    if (confirm(question)) net.send({ t: 'endVoting' });
+  });
+  $('vote-look').addEventListener('click', lookAroundInVote);
+  // Bild klemmt? Nochmal von vorn - meist ist nur die Leitung kurz weg gewesen.
+  $('vote-retry').addEventListener('click', () => {
+    if (state?.voting?.item) showVoteImage(state.voting.item);
+  });
 
   // ---- Results
   $('results-again').addEventListener('click', () => net.send({ t: 'newWords' }));
   $('results-lobby').addEventListener('click', () => net.send({ t: 'backToLobby' }));
-  // Standbilder kommen direkt von Google. Klappt das nicht, soll da kein
-  // zerbrochenes Bild stehen - die Ansicht selbst laesst sich trotzdem oeffnen.
+  // Standbilder kommen ueber den eigenen Server. Ein Fehlversuch ist meist nur
+  // eine Netz-Aussetzer - deshalb einmal nachfassen, bevor der Platzhalter
+  // erscheint. Die Ansicht selbst laesst sich trotzdem oeffnen.
   // error-Ereignisse steigen nicht auf, deshalb in der Capture-Phase lauschen.
   $('results-details').addEventListener('error', (e) => {
-    if (e.target.tagName === 'IMG') e.target.classList.add('broken');
+    const img = e.target;
+    if (img.tagName !== 'IMG') return;
+    if (img.dataset.retried) return img.classList.add('broken');
+    img.dataset.retried = '1';
+    const base = img.src.split('&_r=')[0];
+    setTimeout(() => { img.src = `${base}&_r=${Date.now()}`; }, 800);
   }, true);
 
   $('results-details').addEventListener('click', (e) => {
@@ -1235,13 +1418,23 @@ async function openModal(title, view) {
   $('modal-title').textContent = title;
   $('modal').classList.remove('hidden');
   if (!(await ensureMaps())) return;
-  setTimeout(() => {
-    if (!modalPano) modalPano = createViewPanorama($('pano-modal'), view);
-    else {
-      applyView(modalPano, view);
-      google.maps.event.trigger(modalPano, 'resize');
-    }
-  }, 0);
+  const el = $('pano-modal');
+  let shown = view;
+  try {
+    // Auch hier erst nachfragen: eine tote Panorama-ID bliebe sonst schwarz.
+    shown = await resolveView(view);
+  } catch (err) {
+    toast(err.message, 'warn');
+    return;
+  }
+  if ($('modal').classList.contains('hidden')) return;
+  if (!modalPano) {
+    modalPano = createViewPanorama(el, shown);
+    watchPanoramaSize(modalPano, el);
+  } else {
+    applyView(modalPano, shown);
+  }
+  refreshPanorama(modalPano, el);
 }
 
 function closeModal() {

@@ -9,6 +9,16 @@ const MAX_PLAYERS = 16;
 const MAX_COUNTRIES = 250; // mehr Laender gibt der Datensatz nicht her
 const POINTS_ACCEPTED = 100;
 const POINTS_UNANIMOUS_BONUS = 25;
+
+// Stadt-Land-Fluss-Wertung: ein Wort, das sonst niemand gefunden hat, ist mehr
+// wert als eins, das mehrere abgehakt haben.
+const POINTS_UNIQUE = 20;
+const POINTS_SHARED = 10;
+const SCORE_MODES = ['auto', 'classic', 'unique'];
+// Ab so vielen Mitspielern lohnt sich die Duplikat-Wertung - darunter gaebe es
+// ohnehin fast nie ein doppeltes Wort.
+const UNIQUE_MIN_PLAYERS = 3;
+
 const ROOM_TTL_MS = 6 * 60 * 60 * 1000; // leere Raeume nach 6h aufraeumen
 
 /** @type {Map<string, Room>} */
@@ -32,6 +42,10 @@ function createRoom() {
     code: makeCode(),
     createdAt: Date.now(),
     hostId: null,
+    // Wer den Raum aufgemacht hat. Waehrend eines Reloads springt die
+    // Host-Rolle kurz weiter - kommt der Gruender zurueck, bekommt er sie
+    // wieder. Sonst koennte er das Voting nicht mehr beenden.
+    ownerId: null,
     players: new Map(),
     phase: 'lobby',
     config: {
@@ -45,12 +59,19 @@ function createRoom() {
       // 'freemap' = kein Startort, jeder sucht sich selbst einen aus
       startMode: 'random',
       pickedLocation: null,
+      // Punkteverteilung am Rundenende:
+      // 'classic' = jede anerkannte Einreichung 100 Punkte (+25 bei Einstimmigkeit)
+      // 'unique'  = Stadt-Land-Fluss: 20 fuer ein Wort, das nur einer hat, sonst 10
+      // 'auto'    = 'unique' ab drei Mitspielern, sonst 'classic'
+      scoreMode: 'auto',
       // Optionaler Laender-Filter. 'off' = ganze Welt (Standard),
       // 'block' = die Codes sind gesperrt, 'allow' = nur die Codes sind erlaubt.
       // Geprueft wird im Browser - der Server merkt sich nur die Einstellung.
       countryFilter: { mode: 'off', codes: [] },
     },
     round: null, // { startedAt, endsAt, startLocation, submissions: Map }
+    // Die Voting-Phase laeuft, bis der Host sie beendet. Es gibt bewusst keinen
+    // Timer, der sie abraeumt - sonst waere sie nach einem Reload weg.
     voting: null, // { order, index, votes: Map<subId, Map<playerId, bool>>, deadline }
     results: null,
     timer: null,
@@ -130,9 +151,13 @@ export function serializeState(room, playerId) {
       startMode: room.config.startMode,
       pickedLocation: room.config.pickedLocation,
       countryFilter: room.config.countryFilter,
+      scoreMode: room.config.scoreMode,
     },
     players: [...room.players.values()].map((p) => publicPlayer(room, p)),
     poolSize: WORD_POOL.length,
+    // Damit die Lobby zeigen kann, was 'auto' gerade bedeutet.
+    effectiveScoreMode: effectiveScoreMode(room),
+    uniqueMinPlayers: UNIQUE_MIN_PLAYERS,
   };
 
   if (room.phase === 'playing' && room.round) {
@@ -153,10 +178,17 @@ export function serializeState(room, playerId) {
     const sub = currentVoteItem(room);
     const votes = sub ? room.voting.votes.get(sub.id) : null;
     const voters = sub ? eligibleVoters(room, sub) : [];
+    const settled = room.voting.order.filter((id) => isSettled(room, room.voting.byId.get(id))).length;
     state.voting = {
       index: room.voting.index,
       total: room.voting.order.length,
+      // Reine Anzeige - abgelaufen heisst nur "Richtzeit rum", nicht "vorbei".
       remainingMs: Math.max(0, room.voting.deadline - Date.now()),
+      // Host-Feedback: wo stehen wir, und ist hier schon alles entschieden?
+      allVoted: !!sub && isSettled(room, sub),
+      settled,
+      canPrev: room.voting.index > 0,
+      canNext: room.voting.index < room.voting.order.length - 1,
       item: sub
         ? {
             id: sub.id,
@@ -221,71 +253,93 @@ function beginVoting(room) {
     byId: new Map(subs.map((s) => [s.id, s])),
     index: 0,
     votes: new Map(subs.map((s) => [s.id, new Map()])),
+    // Nur zur Anzeige: eine Richtzeit pro Bild. Laeuft sie ab, passiert nichts -
+    // beendet wird die Phase ausschliesslich vom Host.
     deadline: Date.now() + room.config.votingSec * 1000,
   };
-  scheduleVoteTimeout(room);
   broadcast(room);
 }
 
-function scheduleVoteTimeout(room) {
-  clearTimer(room);
-  const ms = Math.max(0, room.voting.deadline - Date.now()) + 200;
-  room.timer = setTimeout(() => advanceVote(room, true), ms);
-}
-
-function advanceVote(room, fromTimeout = false) {
+/**
+ * Blaettert im Voting vor oder zurueck. Nur der Host loest das aus; das Ende
+ * der Liste beendet die Runde bewusst NICHT - dafuer gibt es 'endVoting'.
+ */
+function moveVote(room, step) {
   if (room.phase !== 'voting' || !room.voting) return;
-  clearTimer(room);
-
-  room.voting.pendingAdvanceFor = null;
-  room.voting.index++;
-  if (room.voting.index >= room.voting.order.length) {
-    finishRound(room);
-    return;
-  }
+  const last = room.voting.order.length - 1;
+  const next = Math.min(last, Math.max(0, room.voting.index + step));
+  if (next === room.voting.index) return;
+  room.voting.index = next;
   room.voting.deadline = Date.now() + room.config.votingSec * 1000;
-  scheduleVoteTimeout(room);
   broadcast(room);
-  void fromTimeout;
 }
 
-function maybeAutoAdvance(room) {
-  const sub = currentVoteItem(room);
-  if (!sub) return;
-  // Schon eingeplant? Dann nicht neu aufziehen - sonst koennte man den
-  // Wechsel durch staendiges Umstimmen beliebig hinauszoegern.
-  if (room.voting.pendingAdvanceFor === sub.id) return;
-
+/** Haben alle Stimmberechtigten zu dieser Einreichung abgestimmt? */
+function isSettled(room, sub) {
   const voters = eligibleVoters(room, sub);
   const votes = room.voting.votes.get(sub.id);
-  if (voters.length && voters.every((p) => votes.has(p.id))) {
-    // kurze Verzoegerung, damit man das Ergebnis noch kurz sieht
-    room.voting.pendingAdvanceFor = sub.id;
-    clearTimer(room);
-    room.timer = setTimeout(() => {
-      advanceVote(room);
-    }, 900);
+  return !!voters.length && voters.every((p) => votes && votes.has(p.id));
+}
+
+/** Wie viele Leute spielen gerade wirklich mit? (verbunden oder mit Fund) */
+function activePlayerCount(room) {
+  const ids = new Set(connectedPlayers(room).map((p) => p.id));
+  if (room.round) {
+    for (const sub of room.round.submissions.values()) ids.add(sub.playerId);
   }
+  return ids.size;
+}
+
+/** 'auto' entscheidet sich erst am Rundenende - je nachdem, wie viele mitspielen. */
+function effectiveScoreMode(room) {
+  const mode = SCORE_MODES.includes(room.config.scoreMode) ? room.config.scoreMode : 'auto';
+  if (mode !== 'auto') return mode;
+  return activePlayerCount(room) >= UNIQUE_MIN_PLAYERS ? 'unique' : 'classic';
 }
 
 function finishRound(room) {
   clearTimer(room);
-  const scores = new Map([...room.players.keys()].map((id) => [id, { points: 0, accepted: 0, submitted: 0 }]));
+  const scores = new Map([...room.players.keys()].map((id) => [id, {
+    points: 0, accepted: 0, submitted: 0, uniques: 0,
+  }]));
   const details = [];
+  const scoreMode = effectiveScoreMode(room);
 
   const subs = room.round ? [...room.round.submissions.values()] : [];
-  for (const sub of subs) {
+
+  // Erst wird ueber alle Einreichungen entschieden, dann erst gewertet: fuer den
+  // Einzigartig-Bonus muss man wissen, wer dasselbe Wort sonst noch anerkannt
+  // bekommen hat. Deshalb zwei Durchgaenge statt einem.
+  const judged = subs.map((sub) => {
     const votes = room.voting ? room.voting.votes.get(sub.id) : null;
     const yes = votes ? [...votes.values()].filter(Boolean).length : 0;
     const no = votes ? [...votes.values()].filter((v) => v === false).length : 0;
     const total = yes + no;
-
-    // Ohne abgegebene Stimmen (z.B. alle weg / Timeout) zaehlt es als akzeptiert.
+    // Ohne abgegebene Stimmen (z.B. alle weg, Host beendet frueh) zaehlt es als akzeptiert.
     const accepted = total === 0 ? true : yes > total / 2;
+    return { sub, yes, no, total, accepted };
+  });
+
+  // Abgleich aller anerkannten Woerter: wer hat dasselbe Wort auch abgehakt?
+  const findersByWord = new Map();
+  for (const j of judged) {
+    if (!j.accepted) continue;
+    if (!findersByWord.has(j.sub.wordId)) findersByWord.set(j.sub.wordId, new Set());
+    findersByWord.get(j.sub.wordId).add(j.sub.playerId);
+  }
+
+  for (const { sub, yes, no, total, accepted } of judged) {
+    const finders = findersByWord.get(sub.wordId)?.size || 0;
+    const unique = accepted && finders === 1;
+
     let points = 0;
     if (accepted) {
-      points = POINTS_ACCEPTED;
-      if (total >= 2 && no === 0) points += POINTS_UNANIMOUS_BONUS;
+      if (scoreMode === 'unique') {
+        points = unique ? POINTS_UNIQUE : POINTS_SHARED;
+      } else {
+        points = POINTS_ACCEPTED;
+        if (total >= 2 && no === 0) points += POINTS_UNANIMOUS_BONUS;
+      }
     }
 
     const s = scores.get(sub.playerId);
@@ -294,6 +348,7 @@ function finishRound(room) {
       if (accepted) {
         s.accepted++;
         s.points += points;
+        if (unique) s.uniques++;
       }
     }
 
@@ -308,6 +363,8 @@ function finishRound(room) {
       no,
       accepted,
       points,
+      finders,
+      unique,
     });
   }
 
@@ -316,7 +373,7 @@ function finishRound(room) {
       id: p.id,
       name: p.name,
       color: p.color,
-      ...(scores.get(p.id) || { points: 0, accepted: 0, submitted: 0 }),
+      ...(scores.get(p.id) || { points: 0, accepted: 0, submitted: 0, uniques: 0 }),
     }))
     .sort((a, b) => b.points - a.points || b.accepted - a.accepted || a.name.localeCompare(b.name));
 
@@ -331,7 +388,15 @@ function finishRound(room) {
   });
 
   room.phase = 'results';
-  room.results = { ranking, details, wordCount: room.config.words.length };
+  room.results = {
+    ranking,
+    details,
+    wordCount: room.config.words.length,
+    scoreMode,
+    points: scoreMode === 'unique'
+      ? { unique: POINTS_UNIQUE, shared: POINTS_SHARED }
+      : { accepted: POINTS_ACCEPTED, unanimous: POINTS_UNANIMOUS_BONUS },
+  };
   room.voting = null;
   broadcast(room);
 }
@@ -514,6 +579,9 @@ export function handleMessage(ws, raw) {
         const filter = sanitizeCountryFilter(c.countryFilter);
         if (filter) room.config.countryFilter = filter;
       }
+      if (c.scoreMode != null) {
+        room.config.scoreMode = SCORE_MODES.includes(c.scoreMode) ? c.scoreMode : 'auto';
+      }
       broadcast(room);
       return;
     }
@@ -593,15 +661,26 @@ export function handleMessage(ws, raw) {
         return toast(ws, 'Ueber deine eigene Einreichung darfst du nicht abstimmen.', 'warn');
       }
       room.voting.votes.get(sub.id).set(player.id, !!msg.value);
+      // Bewusst kein automatisches Weiterschalten mehr: dass alle abgestimmt
+      // haben, ist nur ein Hinweis fuer den Host.
       broadcast(room);
-      maybeAutoAdvance(room);
       return;
     }
 
+    // Vor- und zurueckblaettern. 'skipVote' bleibt als alter Name bestehen,
+    // damit ein noch offener Tab mit altem Code nicht ins Leere greift.
+    case 'voteNav':
     case 'skipVote': {
-      if (!isHost) return;
+      if (!isHost) return toast(ws, 'Nur der Host steuert das Voting.', 'warn');
       if (room.phase !== 'voting') return;
-      advanceVote(room);
+      moveVote(room, msg.dir === 'prev' ? -1 : 1);
+      return;
+    }
+
+    case 'endVoting': {
+      if (!isHost) return toast(ws, 'Nur der Host kann das Voting beenden.', 'warn');
+      if (room.phase !== 'voting') return;
+      finishRound(room); // sendet selbst
       return;
     }
 
@@ -679,7 +758,11 @@ function onHello(ws, msg) {
     player.lastSeen = Date.now();
   }
 
+  if (!room.ownerId) room.ownerId = player.id;
   if (!room.hostId) room.hostId = player.id;
+  // Der Gruender ist wieder da: Rolle zurueck. Ohne das haette ein Neuladen
+  // waehrend des Votings ihm die Steuerung dauerhaft weggenommen.
+  if (player.id === room.ownerId) room.hostId = player.id;
 
   // Falls dieselbe Person in einem anderen Tab offen war: alte Verbindung trennen
   for (const other of sockets) {
@@ -701,8 +784,9 @@ export function handleClose(ws) {
   if (!player) return;
   player.connected = false;
   ensureHost(room);
+  // Kein Weiterschalten beim Verbindungsverlust: sonst wuerde ein Reload
+  // waehrend des Votings die Einreichung ueberspringen.
   broadcast(room);
-  if (room.phase === 'voting') maybeAutoAdvance(room);
 }
 
 export function roomStats() {
